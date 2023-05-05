@@ -40,7 +40,7 @@ def nested_payload_collection_setup(collection_name, on_disk_payload=False):
         api='/collections/{collection_name}/points',
         method="PUT",
         path_params={'collection_name': collection_name},
-        query_params={'wait': 'true'},
+        query_params={'wait': True},
         body={
             "points": [
                 {
@@ -190,7 +190,7 @@ def test_payload_indexing_operations():
         api='/collections/{collection_name}/index',
         method="PUT",
         path_params={'collection_name': collection_name},
-        query_params={'wait': 'true'},
+        query_params={'wait': True},
         body={
             "field_name": "country.capital",
             "field_schema": "keyword"
@@ -203,7 +203,7 @@ def test_payload_indexing_operations():
         api='/collections/{collection_name}/index',
         method="PUT",
         path_params={'collection_name': collection_name},
-        query_params={'wait': 'true'},
+        query_params={'wait': True},
         body={
             "field_name": "country.cities[].population",
             "field_schema": "float"
@@ -389,7 +389,7 @@ def test_payload_indexing_operations():
         api='/collections/{collection_name}/index/{field_name}',
         method="DELETE",
         path_params={'collection_name': collection_name, 'field_name': 'country.capital'},
-        query_params={'wait': 'true'},
+        query_params={'wait': True},
     )
     assert response.ok
 
@@ -397,7 +397,7 @@ def test_payload_indexing_operations():
         api='/collections/{collection_name}/index/{field_name}',
         method="DELETE",
         path_params={'collection_name': collection_name, 'field_name': 'country.cities[].population'},
-        query_params={'wait': 'true'},
+        query_params={'wait': True},
     )
     assert response.ok
 

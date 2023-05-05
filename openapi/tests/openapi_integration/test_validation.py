@@ -47,7 +47,8 @@ def test_validation():
                 "memmap_threshold": 100,
                 "indexing_threshold": 100,
             },
-        }
+        },
+        validate_request=False # to cause server-side validation
     )
     assert not response.ok
     assert 'Validation error' in response.json()["status"]["error"]
