@@ -32,10 +32,13 @@ pub trait PayloadFieldIndex {
     fn filter<'a>(
         &'a self,
         condition: &'a FieldCondition,
-    ) -> Option<Box<dyn Iterator<Item = PointOffsetType> + 'a>>;
+    ) -> OperationResult<Option<Box<dyn Iterator<Item = PointOffsetType> + 'a>>>;
 
     /// Return estimation of points amount which satisfy given condition
-    fn estimate_cardinality(&self, condition: &FieldCondition) -> Option<CardinalityEstimation>;
+    fn estimate_cardinality(
+        &self,
+        condition: &FieldCondition,
+    ) -> OperationResult<Option<CardinalityEstimation>>;
 
     /// Iterate conditions for payload blocks with minimum size of `threshold`
     /// Required for building HNSW index
@@ -135,8 +138,8 @@ impl FieldIndex {
         &self,
         condition: &FieldCondition,
         payload_value: &Value,
-    ) -> Option<bool> {
-        match self {
+    ) -> OperationResult<Option<bool>> {
+        Ok(match self {
             FieldIndex::IntIndex(_) => None,
             FieldIndex::IntMapIndex(_) => None,
             FieldIndex::KeywordIndex(_) => None,
@@ -144,18 +147,18 @@ impl FieldIndex {
             FieldIndex::GeoIndex(_) => None,
             FieldIndex::FullTextIndex(full_text_index) => match &condition.r#match {
                 Some(Match::Text(MatchText { text })) => {
-                    let query = full_text_index.parse_query(text);
+                    let query = full_text_index.parse_query(text)?;
                     for value in full_text_index.get_values(payload_value) {
                         let document = full_text_index.parse_document(&value);
                         if query.check_match(&document) {
-                            return Some(true);
+                            return Ok(Some(true));
                         }
                     }
                     Some(false)
                 }
                 _ => None,
             },
-        }
+        })
     }
 
     fn get_payload_field_index(&self) -> &dyn PayloadFieldIndex {
@@ -225,14 +228,14 @@ impl FieldIndex {
     pub fn filter<'a>(
         &'a self,
         condition: &'a FieldCondition,
-    ) -> Option<Box<dyn Iterator<Item = PointOffsetType> + 'a>> {
+    ) -> OperationResult<Option<Box<dyn Iterator<Item = PointOffsetType> + 'a>>> {
         self.get_payload_field_index().filter(condition)
     }
 
     pub fn estimate_cardinality(
         &self,
         condition: &FieldCondition,
-    ) -> Option<CardinalityEstimation> {
+    ) -> OperationResult<Option<CardinalityEstimation>> {
         self.get_payload_field_index()
             .estimate_cardinality(condition)
     }

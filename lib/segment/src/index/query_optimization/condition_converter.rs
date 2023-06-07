@@ -1,8 +1,10 @@
+use std::borrow::Borrow;
 use std::collections::HashSet;
 
 use serde_json::Value;
 
 use crate::common::utils::IndexesMap;
+use crate::entry::entry_point::OperationResult;
 use crate::id_tracker::IdTrackerSS;
 use crate::index::field_index::FieldIndex;
 use crate::index::query_optimization::optimized_filter::ConditionCheckerFn;
@@ -22,22 +24,24 @@ pub fn condition_converter<'a>(
     field_indexes: &'a IndexesMap,
     payload_provider: PayloadProvider,
     id_tracker: &IdTrackerSS,
-) -> ConditionCheckerFn<'a> {
-    match condition {
-        Condition::Field(field_condition) => field_indexes
-            .get(&field_condition.key)
-            .and_then(|indexes| {
-                indexes
-                    .iter()
-                    .find_map(|index| field_condition_index(index, field_condition))
-            })
-            .unwrap_or_else(|| {
-                Box::new(move |point_id| {
-                    payload_provider.with_payload(point_id, |payload| {
-                        check_field_condition(field_condition, &payload, field_indexes)
-                    })
+) -> OperationResult<ConditionCheckerFn<'a>> {
+    Ok(match condition {
+        Condition::Field(field_condition) => {
+            let maybe_indexes = field_indexes.get(&field_condition.key);
+            if let Some(indexes) = maybe_indexes {
+                for index in indexes.iter() {
+                    if let Some(val) = field_condition_index(index, field_condition)? {
+                        return Ok(val);
+                    }
+                }
+            }
+
+            Box::new(move |point_id| {
+                payload_provider.with_payload(point_id, |payload| {
+                    check_field_condition(field_condition, &payload, field_indexes)
                 })
-            }),
+            })
+        }
         // ToDo: It might be possible to make this condition faster by using index to check
         //       if there is any value. But if value if not found,
         //       it does not mean that there are no values in payload
@@ -109,19 +113,19 @@ pub fn condition_converter<'a>(
             })
         }
         Condition::Filter(_) => unreachable!(),
-    }
+    })
 }
 
 pub fn field_condition_index<'a>(
     index: &'a FieldIndex,
     field_condition: &FieldCondition,
-) -> Option<ConditionCheckerFn<'a>> {
+) -> OperationResult<Option<ConditionCheckerFn<'a>>> {
     if let Some(checker) = field_condition
         .r#match
         .clone()
-        .and_then(|cond| get_match_checkers(index, cond))
+        .map(|cond| get_match_checkers(index, cond))
     {
-        return Some(checker);
+        return checker;
     }
 
     if let Some(checker) = field_condition
@@ -129,7 +133,7 @@ pub fn field_condition_index<'a>(
         .clone()
         .and_then(|cond| get_range_checkers(index, cond))
     {
-        return Some(checker);
+        return Ok(Some(checker));
     }
 
     if let Some(checker) = field_condition
@@ -137,7 +141,7 @@ pub fn field_condition_index<'a>(
         .clone()
         .and_then(|cond| get_geo_radius_checkers(index, cond))
     {
-        return Some(checker);
+        return Ok(Some(checker));
     }
 
     if let Some(checker) = field_condition
@@ -145,10 +149,10 @@ pub fn field_condition_index<'a>(
         .clone()
         .and_then(|cond| get_geo_bounding_box_checkers(index, cond))
     {
-        return Some(checker);
+        return Ok(Some(checker));
     }
 
-    None
+    Ok(None)
 }
 
 pub fn get_geo_radius_checkers(
@@ -203,8 +207,11 @@ pub fn get_range_checkers(index: &FieldIndex, range: Range) -> Option<ConditionC
     }
 }
 
-pub fn get_match_checkers(index: &FieldIndex, cond_match: Match) -> Option<ConditionCheckerFn> {
-    match cond_match {
+pub fn get_match_checkers(
+    index: &FieldIndex,
+    cond_match: Match,
+) -> OperationResult<Option<ConditionCheckerFn>> {
+    Ok(match cond_match {
         Match::Value(MatchValue {
             value: value_variant,
         }) => match (value_variant, index) {
@@ -226,11 +233,11 @@ pub fn get_match_checkers(index: &FieldIndex, cond_match: Match) -> Option<Condi
         },
         Match::Text(MatchText { text }) => match index {
             FieldIndex::FullTextIndex(full_text_index) => {
-                let parsed_query = full_text_index.parse_query(&text);
+                let parsed_query = full_text_index.parse_query(&text)?;
                 Some(Box::new(move |point_id: PointOffsetType| {
                     full_text_index
                         .get_doc(point_id)
-                        .map_or(false, |doc| parsed_query.check_match(doc))
+                        .map_or(false, |doc| parsed_query.check_match(doc.borrow()))
                 }))
             }
             _ => None,
@@ -272,5 +279,5 @@ pub fn get_match_checkers(index: &FieldIndex, cond_match: Match) -> Option<Condi
                 index.values_count(point_id) > 0
             })),
         },
-    }
+    })
 }

@@ -55,6 +55,8 @@ validator = { version = "0.16", features = ["derive"] }
 chrono = { version = "0.4.26", features = ["serde"] }
 
 sysinfo = "0.29"
+ouroboros = "0.15.6"
+self_cell = "0.10.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 cgroups-rs = "0.3"

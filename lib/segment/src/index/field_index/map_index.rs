@@ -321,8 +321,8 @@ impl PayloadFieldIndex for MapIndex<String> {
     fn filter<'a>(
         &'a self,
         condition: &'a FieldCondition,
-    ) -> Option<Box<dyn Iterator<Item = PointOffsetType> + 'a>> {
-        match &condition.r#match {
+    ) -> OperationResult<Option<Box<dyn Iterator<Item = PointOffsetType> + 'a>>> {
+        Ok(match &condition.r#match {
             Some(Match::Value(MatchValue {
                 value: ValueVariants::Keyword(keyword),
             })) => Some(self.get_iterator(keyword)),
@@ -338,10 +338,13 @@ impl PayloadFieldIndex for MapIndex<String> {
                 except: AnyVariants::Keywords(keywords),
             })) => Some(self.except_iterator(keywords)),
             _ => None,
-        }
+        })
     }
 
-    fn estimate_cardinality(&self, condition: &FieldCondition) -> Option<CardinalityEstimation> {
+    fn estimate_cardinality(
+        &self,
+        condition: &FieldCondition,
+    ) -> OperationResult<Option<CardinalityEstimation>> {
         match &condition.r#match {
             Some(Match::Value(MatchValue {
                 value: ValueVariants::Keyword(keyword),
@@ -350,7 +353,7 @@ impl PayloadFieldIndex for MapIndex<String> {
                 estimation
                     .primary_clauses
                     .push(PrimaryCondition::Condition(condition.clone()));
-                Some(estimation)
+                Ok(Some(estimation))
             }
             Some(Match::Any(MatchAny {
                 any: AnyVariants::Keywords(keywords),
@@ -359,15 +362,15 @@ impl PayloadFieldIndex for MapIndex<String> {
                     .iter()
                     .map(|keyword| self.match_cardinality(keyword))
                     .collect::<Vec<_>>();
-                Some(combine_should_estimations(
+                Ok(Some(combine_should_estimations(
                     &estimations,
                     self.indexed_points,
-                ))
+                )))
             }
             Some(Match::Except(MatchExcept {
                 except: AnyVariants::Keywords(keywords),
-            })) => Some(self.except_cardinality(keywords)),
-            _ => None,
+            })) => Ok(Some(self.except_cardinality(keywords))),
+            _ => Ok(None),
         }
     }
 
@@ -412,8 +415,8 @@ impl PayloadFieldIndex for MapIndex<IntPayloadType> {
     fn filter<'a>(
         &'a self,
         condition: &'a FieldCondition,
-    ) -> Option<Box<dyn Iterator<Item = PointOffsetType> + 'a>> {
-        match &condition.r#match {
+    ) -> OperationResult<Option<Box<dyn Iterator<Item = PointOffsetType> + 'a>>> {
+        Ok(match &condition.r#match {
             Some(Match::Value(MatchValue {
                 value: ValueVariants::Integer(integer),
             })) => Some(self.get_iterator(integer)),
@@ -429,10 +432,13 @@ impl PayloadFieldIndex for MapIndex<IntPayloadType> {
                 except: AnyVariants::Integers(integers),
             })) => Some(self.except_iterator(integers)),
             _ => None,
-        }
+        })
     }
 
-    fn estimate_cardinality(&self, condition: &FieldCondition) -> Option<CardinalityEstimation> {
+    fn estimate_cardinality(
+        &self,
+        condition: &FieldCondition,
+    ) -> OperationResult<Option<CardinalityEstimation>> {
         match &condition.r#match {
             Some(Match::Value(MatchValue {
                 value: ValueVariants::Integer(integer),
@@ -441,7 +447,7 @@ impl PayloadFieldIndex for MapIndex<IntPayloadType> {
                 estimation
                     .primary_clauses
                     .push(PrimaryCondition::Condition(condition.clone()));
-                Some(estimation)
+                Ok(Some(estimation))
             }
             Some(Match::Any(MatchAny {
                 any: AnyVariants::Integers(integers),
@@ -450,15 +456,15 @@ impl PayloadFieldIndex for MapIndex<IntPayloadType> {
                     .iter()
                     .map(|integer| self.match_cardinality(integer))
                     .collect::<Vec<_>>();
-                Some(combine_should_estimations(
+                Ok(Some(combine_should_estimations(
                     &estimations,
                     self.indexed_points,
-                ))
+                )))
             }
             Some(Match::Except(MatchExcept {
                 except: AnyVariants::Integers(integers),
-            })) => Some(self.except_cardinality(integers)),
-            _ => None,
+            })) => Ok(Some(self.except_cardinality(integers))),
+            _ => Ok(None),
         }
     }
 

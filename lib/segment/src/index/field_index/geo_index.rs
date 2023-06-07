@@ -516,11 +516,11 @@ impl PayloadFieldIndex for GeoMapIndex {
     fn filter(
         &self,
         condition: &FieldCondition,
-    ) -> Option<Box<dyn Iterator<Item = PointOffsetType> + '_>> {
+    ) -> OperationResult<Option<Box<dyn Iterator<Item = PointOffsetType> + '_>>> {
         if let Some(geo_bounding_box) = &condition.geo_bounding_box {
             let geo_hashes = rectangle_hashes(geo_bounding_box, GEO_QUERY_MAX_REGION);
             let geo_condition_copy = geo_bounding_box.clone();
-            return Some(Box::new(self.get_iterator(geo_hashes).filter(
+            return Ok(Some(Box::new(self.get_iterator(geo_hashes).filter(
                 move |point| {
                     self.point_to_values
                         .get(*point as usize)
@@ -528,13 +528,13 @@ impl PayloadFieldIndex for GeoMapIndex {
                         .iter()
                         .any(|point| geo_condition_copy.check_point(point.lon, point.lat))
                 },
-            )));
+            ))));
         }
 
         if let Some(geo_radius) = &condition.geo_radius {
             let geo_hashes = circle_hashes(geo_radius, GEO_QUERY_MAX_REGION);
             let geo_condition_copy = geo_radius.clone();
-            return Some(Box::new(self.get_iterator(geo_hashes).filter(
+            return Ok(Some(Box::new(self.get_iterator(geo_hashes).filter(
                 move |point| {
                     self.point_to_values
                         .get(*point as usize)
@@ -542,20 +542,23 @@ impl PayloadFieldIndex for GeoMapIndex {
                         .iter()
                         .any(|point| geo_condition_copy.check_point(point.lon, point.lat))
                 },
-            )));
+            ))));
         }
 
-        None
+        Ok(None)
     }
 
-    fn estimate_cardinality(&self, condition: &FieldCondition) -> Option<CardinalityEstimation> {
+    fn estimate_cardinality(
+        &self,
+        condition: &FieldCondition,
+    ) -> OperationResult<Option<CardinalityEstimation>> {
         if let Some(geo_bounding_box) = &condition.geo_bounding_box {
             let geo_hashes = rectangle_hashes(geo_bounding_box, GEO_QUERY_MAX_REGION);
             let mut estimation = self.match_cardinality(&geo_hashes);
             estimation
                 .primary_clauses
                 .push(PrimaryCondition::Condition(condition.clone()));
-            return Some(estimation);
+            return Ok(Some(estimation));
         }
 
         if let Some(geo_radius) = &condition.geo_radius {
@@ -564,10 +567,10 @@ impl PayloadFieldIndex for GeoMapIndex {
             estimation
                 .primary_clauses
                 .push(PrimaryCondition::Condition(condition.clone()));
-            return Some(estimation);
+            return Ok(Some(estimation));
         }
 
-        None
+        Ok(None)
     }
 
     fn payload_blocks(
@@ -670,7 +673,7 @@ mod tests {
 
         let field_condition = condition_for_geo_radius("test".to_string(), geo_radius);
         let card = field_index.estimate_cardinality(&field_condition);
-        let card = card.unwrap();
+        let card = card.unwrap().unwrap();
 
         eprintln!("real_cardinality = {real_cardinality:#?}");
         eprintln!("card = {card:#?}");
@@ -708,8 +711,11 @@ mod tests {
 
         let field_condition = condition_for_geo_radius("test".to_string(), geo_radius);
 
-        let mut indexed_matched_points =
-            field_index.filter(&field_condition).unwrap().collect_vec();
+        let mut indexed_matched_points = field_index
+            .filter(&field_condition)
+            .unwrap()
+            .unwrap()
+            .collect_vec();
 
         matched_points.sort_unstable();
         indexed_matched_points.sort_unstable();
@@ -734,7 +740,11 @@ mod tests {
             .payload_blocks(100, "test".to_string())
             .collect_vec();
         blocks.iter().for_each(|block| {
-            let block_points = field_index.filter(&block.condition).unwrap().collect_vec();
+            let block_points = field_index
+                .filter(&block.condition)
+                .unwrap()
+                .unwrap()
+                .collect_vec();
             assert_eq!(block_points.len(), block.cardinality);
         });
     }
@@ -769,7 +779,7 @@ mod tests {
         };
         let field_condition = condition_for_geo_radius("test".to_string(), nyc_geo_radius);
         let card = index.estimate_cardinality(&field_condition);
-        let card = card.unwrap();
+        let card = card.unwrap().unwrap();
         assert_eq!(card.min, 1);
         assert_eq!(card.max, 1);
         assert_eq!(card.exp, 1);
@@ -781,7 +791,7 @@ mod tests {
         };
         let field_condition = condition_for_geo_radius("test".to_string(), berlin_geo_radius);
         let card = index.estimate_cardinality(&field_condition);
-        let card = card.unwrap();
+        let card = card.unwrap().unwrap();
         assert_eq!(card.min, 1);
         assert_eq!(card.max, 1);
         assert_eq!(card.exp, 1);
@@ -793,7 +803,7 @@ mod tests {
         };
         let field_condition = condition_for_geo_radius("test".to_string(), tokyo_geo_radius);
         let card = index.estimate_cardinality(&field_condition);
-        let card = card.unwrap();
+        let card = card.unwrap().unwrap();
         // no points found
         assert_eq!(card.min, 0);
         assert_eq!(card.max, 0);
@@ -828,7 +838,7 @@ mod tests {
         };
         let field_condition = condition_for_geo_radius("test".to_string(), berlin_geo_radius);
         let card = index.estimate_cardinality(&field_condition);
-        let card = card.unwrap();
+        let card = card.unwrap().unwrap();
         // handle properly that a single point matches via two different geo payloads
         assert_eq!(card.min, 1);
         assert_eq!(card.max, 1);
@@ -871,7 +881,11 @@ mod tests {
         };
 
         let field_condition = condition_for_geo_radius("test".to_string(), berlin_geo_radius);
-        let point_offsets = new_index.filter(&field_condition).unwrap().collect_vec();
+        let point_offsets = new_index
+            .filter(&field_condition)
+            .unwrap()
+            .unwrap()
+            .collect_vec();
         assert_eq!(point_offsets, vec![1]);
     }
 

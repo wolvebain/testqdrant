@@ -24,7 +24,6 @@ pub struct DatabaseColumnWrapper {
 }
 
 pub struct DatabaseColumnIterator<'a> {
-    pub handle: &'a ColumnFamily,
     pub iter: rocksdb::DBRawIterator<'a>,
     pub just_seeked: bool,
 }
@@ -153,7 +152,7 @@ impl DatabaseColumnWrapper {
         Ok(())
     }
 
-    pub fn lock_db(&self) -> LockedDatabaseColumnWrapper {
+    pub fn lock_db(&self) -> LockedDatabaseColumnWrapper<'_> {
         LockedDatabaseColumnWrapper {
             guard: self.database.read(),
             column_name: &self.column_name,
@@ -217,7 +216,7 @@ impl DatabaseColumnWrapper {
         write_options
     }
 
-    fn get_column_family<'a>(
+    pub fn get_column_family<'a>(
         &self,
         db: &'a parking_lot::RwLockReadGuard<'_, DB>,
     ) -> OperationResult<&'a ColumnFamily> {
@@ -231,7 +230,7 @@ impl DatabaseColumnWrapper {
 }
 
 impl<'a> LockedDatabaseColumnWrapper<'a> {
-    pub fn iter(&self) -> OperationResult<DatabaseColumnIterator> {
+    pub fn iter(&'a self) -> OperationResult<DatabaseColumnIterator<'a>> {
         DatabaseColumnIterator::new(&self.guard, self.column_name)
     }
 }
@@ -246,7 +245,6 @@ impl<'a> DatabaseColumnIterator<'a> {
         let mut iter = db.raw_iterator_cf(&handle);
         iter.seek_to_first();
         Ok(DatabaseColumnIterator {
-            handle,
             iter,
             just_seeked: true,
         })

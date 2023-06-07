@@ -1,3 +1,4 @@
+use std::borrow::Borrow;
 use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;
 
@@ -11,7 +12,7 @@ use crate::common::Flusher;
 use crate::data_types::text_index::TextIndexParams;
 use crate::entry::entry_point::{OperationError, OperationResult};
 use crate::index::field_index::full_text_index::inverted_index::{
-    Document, InvertedIndex, ParsedQuery,
+    Document, InvertedIndex, InvertedIndexInMemory, ParsedQuery,
 };
 use crate::index::field_index::full_text_index::tokenizers::Tokenizer;
 use crate::index::field_index::{
@@ -21,7 +22,7 @@ use crate::telemetry::PayloadIndexTelemetry;
 use crate::types::{FieldCondition, Match, PayloadKeyType, PointOffsetType};
 
 pub struct FullTextIndex {
-    inverted_index: InvertedIndex,
+    inverted_index: InvertedIndexInMemory,
     db_wrapper: DatabaseColumnWrapper,
     config: TextIndexParams,
 }
@@ -46,16 +47,18 @@ impl FullTextIndex {
         })
     }
 
-    fn deserialize_document(data: &[u8], index: &mut InvertedIndex) -> OperationResult<Document> {
+    fn deserialize_document(
+        data: &[u8],
+        index: &mut InvertedIndexInMemory,
+    ) -> OperationResult<Document> {
         #[derive(Deserialize)]
         struct StoredDocument {
             tokens: BTreeSet<String>,
         }
-        serde_cbor::from_slice::<StoredDocument>(data)
-            .map_err(|e| {
-                OperationError::service_error(format!("Failed to deserialize document: {e}"))
-            })
-            .map(|doc| index.document_from_tokens(&doc.tokens))
+        let doc = serde_cbor::from_slice::<StoredDocument>(data).map_err(|e| {
+            OperationError::service_error(format!("Failed to deserialize document: {e}"))
+        })?;
+        index.document_from_tokens(&doc.tokens)
     }
 
     fn storage_cf_name(field: &str) -> String {
@@ -66,24 +69,21 @@ impl FullTextIndex {
         let store_cf_name = Self::storage_cf_name(field);
         let db_wrapper = DatabaseColumnWrapper::new(db, &store_cf_name);
         FullTextIndex {
-            inverted_index: InvertedIndex::new(),
+            inverted_index: InvertedIndexInMemory::new(),
             db_wrapper,
             config,
         }
     }
 
-    pub fn get_doc(&self, idx: PointOffsetType) -> Option<&Document> {
-        match self.inverted_index.point_to_docs.get(idx as usize) {
-            Some(Some(doc)) => Some(doc),
-            _ => None,
-        }
+    pub fn get_doc(&self, idx: PointOffsetType) -> Option<impl Borrow<Document> + '_> {
+        self.inverted_index.get_doc(idx)
     }
 
     pub fn get_telemetry_data(&self) -> PayloadIndexTelemetry {
         PayloadIndexTelemetry {
             field_name: None,
-            points_values_count: self.inverted_index.points_count,
-            points_count: self.inverted_index.points_count,
+            points_values_count: self.inverted_index.get_points_count(),
+            points_count: self.inverted_index.get_points_count(),
             histogram_bucket_size: None,
         }
     }
@@ -92,13 +92,27 @@ impl FullTextIndex {
         self.db_wrapper.recreate_column_family()
     }
 
-    pub fn parse_query(&self, text: &str) -> ParsedQuery {
+    pub fn parse_query(&self, text: &str) -> OperationResult<ParsedQuery> {
         let mut tokens = HashSet::new();
+        let mut error = None;
         Tokenizer::tokenize_query(text, &self.config, |token| {
-            tokens.insert(self.inverted_index.vocab.get(token).copied());
+            match self.inverted_index.get_token_id(token) {
+                Ok(token_id) => {
+                    tokens.insert(token_id);
+                }
+                Err(err) => {
+                    if error.is_none() {
+                        error = Some(Err(err))
+                    }
+                }
+            };
         });
-        ParsedQuery {
-            tokens: tokens.into_iter().collect(),
+        if let Some(err) = error {
+            err
+        } else {
+            Ok(ParsedQuery {
+                tokens: tokens.into_iter().collect(),
+            })
         }
     }
 
@@ -113,14 +127,19 @@ impl FullTextIndex {
     }
 
     #[cfg(test)]
-    pub fn query(&self, query: &str) -> Box<dyn Iterator<Item = PointOffsetType> + '_> {
-        let parsed_query = self.parse_query(query);
+    pub fn query(
+        &self,
+        query: &str,
+    ) -> OperationResult<Box<dyn Iterator<Item = PointOffsetType> + '_>> {
+        let parsed_query = self.parse_query(query)?;
         self.inverted_index.filter(&parsed_query)
     }
 
     pub fn values_count(&self, point_id: PointOffsetType) -> usize {
         // Maybe we want number of documents in the future?
-        self.get_doc(point_id).map(|x| x.len()).unwrap_or(0)
+        self.get_doc(point_id)
+            .map(|x| x.borrow().len())
+            .unwrap_or(0)
     }
 }
 
@@ -138,8 +157,8 @@ impl ValueIndexer<String> for FullTextIndex {
             });
         }
 
-        let document = self.inverted_index.document_from_tokens(&tokens);
-        self.inverted_index.index_document(idx, document);
+        let document = self.inverted_index.document_from_tokens(&tokens)?;
+        self.inverted_index.index_document(idx, document)?;
 
         let db_idx = Self::store_key(&idx);
         let db_document = self.serialize_document_tokens(tokens)?;
@@ -157,7 +176,7 @@ impl ValueIndexer<String> for FullTextIndex {
     }
 
     fn remove_point(&mut self, id: PointOffsetType) -> OperationResult<()> {
-        let removed_doc = self.inverted_index.remove_document(id);
+        let removed_doc = self.inverted_index.remove_document(id)?;
 
         if removed_doc.is_none() {
             return Ok(());
@@ -172,7 +191,7 @@ impl ValueIndexer<String> for FullTextIndex {
 
 impl PayloadFieldIndex for FullTextIndex {
     fn indexed_points(&self) -> usize {
-        self.inverted_index.points_count
+        self.inverted_index.get_points_count()
     }
 
     fn load(&mut self) -> OperationResult<bool> {
@@ -183,7 +202,7 @@ impl PayloadFieldIndex for FullTextIndex {
         for (key, value) in self.db_wrapper.lock_db().iter()? {
             let idx = Self::restore_key(&key);
             let document = Self::deserialize_document(&value, &mut self.inverted_index)?;
-            self.inverted_index.index_document(idx, document);
+            self.inverted_index.index_document(idx, document)?;
         }
         Ok(true)
     }
@@ -199,23 +218,26 @@ impl PayloadFieldIndex for FullTextIndex {
     fn filter(
         &self,
         condition: &FieldCondition,
-    ) -> Option<Box<dyn Iterator<Item = PointOffsetType> + '_>> {
+    ) -> OperationResult<Option<Box<dyn Iterator<Item = PointOffsetType> + '_>>> {
         if let Some(Match::Text(text_match)) = &condition.r#match {
-            let parsed_query = self.parse_query(&text_match.text);
-            return Some(self.inverted_index.filter(&parsed_query));
+            let parsed_query = self.parse_query(&text_match.text)?;
+            return Ok(Some(self.inverted_index.filter(&parsed_query)?));
         }
-        None
+        Ok(None)
     }
 
-    fn estimate_cardinality(&self, condition: &FieldCondition) -> Option<CardinalityEstimation> {
+    fn estimate_cardinality(
+        &self,
+        condition: &FieldCondition,
+    ) -> OperationResult<Option<CardinalityEstimation>> {
         if let Some(Match::Text(text_match)) = &condition.r#match {
-            let parsed_query = self.parse_query(&text_match.text);
-            return Some(
-                self.inverted_index
-                    .estimate_cardinality(&parsed_query, condition),
-            );
+            let parsed_query = self.parse_query(&text_match.text)?;
+            return self
+                .inverted_index
+                .estimate_cardinality(&parsed_query, condition)
+                .map(Some);
         }
-        None
+        Ok(None)
     }
 
     fn payload_blocks(
@@ -227,7 +249,7 @@ impl PayloadFieldIndex for FullTextIndex {
     }
 
     fn count_indexed_points(&self) -> usize {
-        self.inverted_index.points_count
+        self.inverted_index.get_points_count()
     }
 }
 
@@ -292,22 +314,27 @@ mod tests {
             assert_eq!(index.count_indexed_points(), payloads.len());
 
             let filter_condition = filter_request("multivac");
-            let search_res: Vec<_> = index.filter(&filter_condition).unwrap().collect();
+            let search_res: Vec<_> = index.filter(&filter_condition).unwrap().unwrap().collect();
             assert_eq!(search_res, vec![0, 4]);
 
             let filter_condition = filter_request("giant computer");
-            let search_res: Vec<_> = index.filter(&filter_condition).unwrap().collect();
+            let search_res: Vec<_> = index.filter(&filter_condition).unwrap().unwrap().collect();
             assert_eq!(search_res, vec![2]);
 
             let filter_condition = filter_request("the great time");
-            let search_res: Vec<_> = index.filter(&filter_condition).unwrap().collect();
+            let search_res: Vec<_> = index.filter(&filter_condition).unwrap().unwrap().collect();
             assert_eq!(search_res, vec![4]);
 
             index.remove_point(2).unwrap();
             index.remove_point(3).unwrap();
 
             let filter_condition = filter_request("giant computer");
-            assert!(index.filter(&filter_condition).unwrap().next().is_none());
+            assert!(index
+                .filter(&filter_condition)
+                .unwrap()
+                .unwrap()
+                .next()
+                .is_none());
 
             assert_eq!(index.count_indexed_points(), payloads.len() - 2);
 
@@ -336,11 +363,11 @@ mod tests {
             assert_eq!(index.count_indexed_points(), 4);
 
             let filter_condition = filter_request("multivac");
-            let search_res: Vec<_> = index.filter(&filter_condition).unwrap().collect();
+            let search_res: Vec<_> = index.filter(&filter_condition).unwrap().unwrap().collect();
             assert_eq!(search_res, vec![0]);
 
             let filter_condition = filter_request("the");
-            let search_res: Vec<_> = index.filter(&filter_condition).unwrap().collect();
+            let search_res: Vec<_> = index.filter(&filter_condition).unwrap().unwrap().collect();
             assert_eq!(search_res, vec![0, 1, 3, 4]);
         }
     }

@@ -1,9 +1,12 @@
+use std::borrow::Borrow;
 use std::collections::{BTreeSet, HashMap};
 
 use serde::{Deserialize, Serialize};
 
+use super::inverted_index_on_disk::InvertedIndexOnDisk;
 use super::posting_list::PostingList;
 use super::postings_iterator::intersect_postings_iterator;
+use crate::entry::entry_point::OperationResult;
 use crate::index::field_index::{CardinalityEstimation, PayloadBlockCondition, PrimaryCondition};
 use crate::types::{FieldCondition, Match, MatchText, PayloadKeyType, PointOffsetType};
 
@@ -55,20 +58,54 @@ impl ParsedQuery {
     }
 }
 
+pub(crate) trait InvertedIndex {
+    type Document<'a>: Borrow<Document>
+    where
+        Self: 'a;
+    fn document_from_tokens(&mut self, tokens: &BTreeSet<String>) -> OperationResult<Document>;
+    fn index_document(&mut self, idx: PointOffsetType, document: Document) -> OperationResult<()>;
+    fn remove_document(&mut self, idx: PointOffsetType) -> OperationResult<Option<()>>;
+    fn filter(
+        &self,
+        query: &ParsedQuery,
+    ) -> OperationResult<Box<dyn Iterator<Item = PointOffsetType> + '_>>;
+    fn get_points_count(&self) -> usize;
+    fn get_doc(&self, idx: PointOffsetType) -> Option<Self::Document<'_>>;
+    fn get_token_id(&self, token: &str) -> OperationResult<Option<u32>>;
+    fn estimate_cardinality(
+        &self,
+        query: &ParsedQuery,
+        condition: &FieldCondition,
+    ) -> OperationResult<CardinalityEstimation>;
+    fn payload_blocks<'a>(
+        &'a self,
+        threshold: usize,
+        key: PayloadKeyType,
+    ) -> Box<dyn Iterator<Item = PayloadBlockCondition> + 'a>;
+}
+
+pub enum InvertedIndexType {
+    InMemory(InvertedIndexInMemory),
+    OnDisk(InvertedIndexOnDisk),
+}
+
 #[derive(Default)]
-pub struct InvertedIndex {
+pub struct InvertedIndexInMemory {
     postings: Vec<Option<PostingList>>,
     pub vocab: HashMap<String, TokenId>,
     pub point_to_docs: Vec<Option<Document>>,
-    pub points_count: usize,
+    points_count: usize,
 }
 
-impl InvertedIndex {
-    pub fn new() -> InvertedIndex {
+impl InvertedIndexInMemory {
+    pub fn new() -> InvertedIndexInMemory {
         Default::default()
     }
+}
 
-    pub fn document_from_tokens(&mut self, tokens: &BTreeSet<String>) -> Document {
+impl InvertedIndex for InvertedIndexInMemory {
+    type Document<'a> = &'a Document;
+    fn document_from_tokens(&mut self, tokens: &BTreeSet<String>) -> OperationResult<Document> {
         let mut document_tokens = vec![];
         for token in tokens {
             // check if in vocab
@@ -83,10 +120,10 @@ impl InvertedIndex {
             document_tokens.push(vocab_idx);
         }
 
-        Document::new(document_tokens)
+        Ok(Document::new(document_tokens))
     }
 
-    pub fn index_document(&mut self, idx: PointOffsetType, document: Document) {
+    fn index_document(&mut self, idx: PointOffsetType, document: Document) -> OperationResult<()> {
         self.points_count += 1;
         if self.point_to_docs.len() <= idx as usize {
             self.point_to_docs
@@ -109,16 +146,17 @@ impl InvertedIndex {
             }
         }
         self.point_to_docs[idx as usize] = Some(document);
+        Ok(())
     }
 
-    pub fn remove_document(&mut self, idx: PointOffsetType) -> Option<Document> {
+    fn remove_document(&mut self, idx: PointOffsetType) -> OperationResult<Option<()>> {
         if self.point_to_docs.len() <= idx as usize {
-            return None; // Already removed or never actually existed
+            return Ok(None); // Already removed or never actually existed
         }
 
         let removed_doc = match std::mem::take(&mut self.point_to_docs[idx as usize]) {
             Some(doc) => doc,
-            None => return None,
+            None => return Ok(None),
         };
 
         self.points_count -= 1;
@@ -130,10 +168,13 @@ impl InvertedIndex {
                 vec.remove(idx);
             }
         }
-        Some(removed_doc)
+        Ok(Some(()))
     }
 
-    pub fn filter(&self, query: &ParsedQuery) -> Box<dyn Iterator<Item = PointOffsetType> + '_> {
+    fn filter(
+        &self,
+        query: &ParsedQuery,
+    ) -> OperationResult<Box<dyn Iterator<Item = PointOffsetType> + '_>> {
         let postings_opt: Option<Vec<_>> = query
             .tokens
             .iter()
@@ -146,21 +187,37 @@ impl InvertedIndex {
             .collect();
         if postings_opt.is_none() {
             // There are unseen tokens -> no matches
-            return Box::new(vec![].into_iter());
+            return Ok(Box::new(vec![].into_iter()));
         }
         let postings = postings_opt.unwrap();
         if postings.is_empty() {
             // Empty request -> no matches
-            return Box::new(vec![].into_iter());
+            return Ok(Box::new(vec![].into_iter()));
         }
-        intersect_postings_iterator(postings)
+        Ok(intersect_postings_iterator(postings))
     }
 
-    pub fn estimate_cardinality(
+    fn get_points_count(&self) -> usize {
+        self.points_count
+    }
+
+    fn get_doc(&self, idx: PointOffsetType) -> Option<Self::Document<'_>> {
+        if let Some(doc) = self.point_to_docs.get(idx as usize) {
+            doc.as_ref()
+        } else {
+            None
+        }
+    }
+
+    fn get_token_id(&self, token: &str) -> OperationResult<Option<u32>> {
+        Ok(self.vocab.get(token).copied())
+    }
+
+    fn estimate_cardinality(
         &self,
         query: &ParsedQuery,
         condition: &FieldCondition,
-    ) -> CardinalityEstimation {
+    ) -> OperationResult<CardinalityEstimation> {
         let postings_opt: Option<Vec<_>> = query
             .tokens
             .iter()
@@ -172,49 +229,49 @@ impl InvertedIndex {
             .collect();
         if postings_opt.is_none() {
             // There are unseen tokens -> no matches
-            return CardinalityEstimation {
+            return Ok(CardinalityEstimation {
                 primary_clauses: vec![PrimaryCondition::Condition(condition.clone())],
                 min: 0,
                 exp: 0,
                 max: 0,
-            };
+            });
         }
         let postings = postings_opt.unwrap();
         if postings.is_empty() {
             // Empty request -> no matches
-            return CardinalityEstimation {
+            return Ok(CardinalityEstimation {
                 primary_clauses: vec![PrimaryCondition::Condition(condition.clone())],
                 min: 0,
                 exp: 0,
                 max: 0,
-            };
+            });
         }
         // Smallest posting is the largest possible cardinality
         let smallest_posting = postings.iter().map(|posting| posting.len()).min().unwrap();
 
         return if postings.len() == 1 {
-            CardinalityEstimation {
+            Ok(CardinalityEstimation {
                 primary_clauses: vec![PrimaryCondition::Condition(condition.clone())],
                 min: smallest_posting,
                 exp: smallest_posting,
                 max: smallest_posting,
-            }
+            })
         } else {
             let expected_frac: f64 = postings
                 .iter()
                 .map(|posting| posting.len() as f64 / self.points_count as f64)
                 .product();
             let exp = (expected_frac * self.points_count as f64) as usize;
-            CardinalityEstimation {
+            Ok(CardinalityEstimation {
                 primary_clauses: vec![PrimaryCondition::Condition(condition.clone())],
                 min: 0, // ToDo: make better estimation
                 exp,
                 max: smallest_posting,
-            }
+            })
         };
     }
 
-    pub fn payload_blocks(
+    fn payload_blocks(
         &self,
         threshold: usize,
         key: PayloadKeyType,
