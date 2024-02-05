@@ -228,7 +228,7 @@ impl SegmentBuilder {
         std::fs::rename(&self.temp_path, &self.destination_path)
             .describe("Moving segment data after optimization")?;
 
-        let loaded_segment = load_segment(&self.destination_path)?.ok_or_else(|| {
+        let loaded_segment = load_segment(&self.destination_path, stopped)?.ok_or_else(|| {
             OperationError::service_error(format!(
                 "Segment loading error: {}",
                 self.destination_path.display()
