@@ -223,6 +223,9 @@ pub struct UpdateCollection {
     /// Map of sparse vector data parameters to update for each sparse vector.
     #[validate]
     pub sparse_vectors: Option<SparseVectorsConfig>,
+    /// Collection-level-metadata for simple description, data title etc
+    #[serde(default)]
+    pub comment: Option<String>,
 }
 
 /// Operation for updating parameters of the existing collection
@@ -245,6 +248,7 @@ impl UpdateCollectionOperation {
                 optimizers_config: None,
                 quantization_config: None,
                 sparse_vectors: None,
+                comment: None,
             },
             shard_replica_changes: None,
         }

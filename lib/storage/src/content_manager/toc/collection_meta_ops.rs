@@ -126,6 +126,7 @@ impl TableOfContent {
             optimizers_config,
             quantization_config,
             sparse_vectors,
+            comment,
         } = operation.update_collection;
         let collection = self
             .get_collection_unchecked(&operation.collection_name)
@@ -160,6 +161,9 @@ impl TableOfContent {
         }
         if let Some(changes) = replica_changes {
             collection.handle_replica_changes(changes).await?;
+        }
+        if let Some(comment) = comment {
+            collection.update_comment(comment).await?;
         }
 
         // Recreate optimizers

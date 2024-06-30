@@ -186,6 +186,7 @@ impl TableOfContent {
             optimizer_config: optimizers_config,
             hnsw_config,
             quantization_config,
+            comment: None,
         };
         let collection = Collection::new(
             collection_name.to_string(),

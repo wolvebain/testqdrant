@@ -161,6 +161,9 @@ pub struct CollectionConfig {
     pub wal_config: WalConfig,
     #[serde(default)]
     pub quantization_config: Option<QuantizationConfig>,
+    /// Collection-level-metadata for simple description, data title etc
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comment: Option<String>,
 }
 
 impl CollectionConfig {
