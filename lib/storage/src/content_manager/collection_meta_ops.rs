@@ -166,6 +166,9 @@ pub struct CreateCollection {
     /// Sparse vector data config.
     #[validate]
     pub sparse_vectors: Option<BTreeMap<String, SparseVectorParams>>,
+    /// Collection-level-metadata for simple description, data title etc
+    #[serde(default)]
+    pub comment: Option<String>,
 }
 
 /// Operation for creating new collection and (optionally) specify index params
@@ -402,6 +405,7 @@ impl From<CollectionConfig> for CreateCollection {
             init_from: None,
             quantization_config: value.quantization_config,
             sparse_vectors: value.params.sparse_vectors,
+            comment: value.comment,
         }
     }
 }
