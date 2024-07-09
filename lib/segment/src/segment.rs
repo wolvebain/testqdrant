@@ -1,5 +1,6 @@
 use std::cmp::max;
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -27,7 +28,7 @@ use crate::data_types::named_vectors::NamedVectors;
 use crate::data_types::order_by::{Direction, OrderBy, OrderValue};
 use crate::data_types::query_context::{QueryContext, SegmentQueryContext};
 use crate::data_types::vectors::{QueryVector, Vector};
-use crate::entry::entry_point::SegmentEntry;
+use crate::entry::entry_point::{SegmentEntry, SegmentId, SegmentIdBase};
 use crate::id_tracker::IdTrackerSS;
 use crate::index::field_index::numeric_index::StreamRange;
 use crate::index::field_index::CardinalityEstimation;
@@ -70,6 +71,7 @@ impl StorageVersion for SegmentVersion {
 /// - Persists data
 /// - Keeps track of occurred errors
 pub struct Segment {
+    pub id: SegmentIdBase,
     /// Latest update operation number, applied to this segment
     /// If None, there were no updates and segment is empty
     pub version: Option<SeqNumberType>,
@@ -335,6 +337,12 @@ impl Segment {
     {
         // Global version to check if operation has already been applied, then skip without execution
         if self.version.unwrap_or(0) > op_num {
+            tracing::info!(
+                internal = true,
+                "segment version {} is newer than operation version {op_num}",
+                self.version.unwrap_or(0)
+            );
+
             return Ok(false);
         }
 
@@ -364,6 +372,20 @@ impl Segment {
                 .internal_version(point_offset)
                 .map_or(false, |current_version| current_version > op_num)
             {
+                let point_id = self.id_tracker.borrow().external_id(point_offset);
+
+                let space = if point_id.is_some() { " " } else { "" };
+                let point_id: &dyn fmt::Display = point_id.as_ref().map_or(&"", |id| id);
+
+                tracing::info!(
+                    internal = true,
+                    "point{space}{point_id} version {} is newer than operation version {op_num}",
+                    self.id_tracker
+                        .borrow()
+                        .internal_version(point_offset)
+                        .unwrap_or(0)
+                );
+
                 return Ok(false);
             }
         }
@@ -1147,9 +1169,21 @@ impl SegmentEntry for Segment {
         self.handle_point_version_and_failure(op_num, stored_internal_point, |segment| {
             if let Some(existing_internal_id) = stored_internal_point {
                 segment.replace_all_vectors(existing_internal_id, vectors)?;
+
+                tracing::info!(
+                    internal = true,
+                    "operation {op_num} updated point {point_id}"
+                );
+
                 Ok((true, Some(existing_internal_id)))
             } else {
                 let new_index = segment.insert_new_vectors(point_id, vectors)?;
+
+                tracing::info!(
+                    internal = true,
+                    "operation {op_num} inserted point {point_id}"
+                );
+
                 Ok((false, Some(new_index)))
             }
         })
@@ -1181,6 +1215,11 @@ impl SegmentEntry for Segment {
                     //     let mut vector_storage = vector_data.vector_storage.borrow_mut();
                     //     vector_storage.delete_vector(internal_id)?;
                     // }
+
+                    tracing::info!(
+                        internal = true,
+                        "operation {op_num} deleted point {point_id}"
+                    );
 
                     Ok((true, Some(internal_id)))
                 })
@@ -1250,6 +1289,12 @@ impl SegmentEntry for Segment {
                     .payload_index
                     .borrow_mut()
                     .assign_all(internal_id, full_payload)?;
+
+                tracing::info!(
+                    internal = true,
+                    "operation {op_num} set full payload for point {point_id}",
+                );
+
                 Ok((true, Some(internal_id)))
             }
             None => Err(OperationError::PointIdError {
@@ -1272,6 +1317,12 @@ impl SegmentEntry for Segment {
                     .payload_index
                     .borrow_mut()
                     .assign(internal_id, payload, key)?;
+
+                tracing::info!(
+                    internal = true,
+                    "operation {op_num} set payload for point {point_id}",
+                );
+
                 Ok((true, Some(internal_id)))
             }
             None => Err(OperationError::PointIdError {
@@ -1505,19 +1556,39 @@ impl SegmentEntry for Segment {
     }
 
     fn flush(&self, sync: bool, force: bool) -> OperationResult<SeqNumberType> {
+        let _span =
+            tracing::info_span!("flush", segment.id = %self.id(), internal = true).entered();
+
         let current_persisted_version: Option<SeqNumberType> = *self.persisted_version.lock();
         if !sync && self.is_background_flushing() {
+            tracing::info!(
+                internal = true,
+                "skip flushing: background flush is already in progress: {}",
+                current_persisted_version.unwrap_or(0),
+            );
+
             return Ok(current_persisted_version.unwrap_or(0));
         }
 
         let mut background_flush_lock = self.lock_flushing()?;
         match (self.version, current_persisted_version) {
             (None, _) => {
+                tracing::info!(
+                    internal = true,
+                    "skip flushing: segment is empty: {}",
+                    current_persisted_version.unwrap_or(0),
+                );
+
                 // Segment is empty, nothing to flush
                 return Ok(current_persisted_version.unwrap_or(0));
             }
             (Some(version), Some(persisted_version)) => {
                 if !force && version == persisted_version {
+                    tracing::info!(
+                        internal = true,
+                        "skip flushing: segment is already flushed: {persisted_version}",
+                    );
+
                     // Segment is already flushed
                     return Ok(persisted_version);
                 }
@@ -1611,6 +1682,12 @@ impl SegmentEntry for Segment {
             })?;
             *persisted_version.lock() = state.version;
 
+            tracing::info!(
+                internal = true,
+                "flushed segment: {}",
+                state.version.unwrap_or(0)
+            );
+
             debug_assert!(state.version.is_some());
             Ok(state.version.unwrap_or(0))
         };
@@ -1618,10 +1695,21 @@ impl SegmentEntry for Segment {
         if sync {
             flush_op()
         } else {
+            tracing::info!(
+                internal = true,
+                "background flush: {}",
+                current_persisted_version.unwrap_or(0)
+            );
+
+            let span = tracing::info_span!("background");
+
             *background_flush_lock = Some(
                 thread::Builder::new()
                     .name("background_flush".to_string())
-                    .spawn(flush_op)
+                    .spawn(move || {
+                        let _span = span.entered();
+                        flush_op()
+                    })
                     .unwrap(),
             );
             Ok(current_persisted_version.unwrap_or(0))
@@ -1865,6 +1953,10 @@ impl SegmentEntry for Segment {
                 vector_data.vector_index.borrow().fill_idf_statistics(idf);
             }
         }
+    }
+
+    fn id(&self) -> SegmentId {
+        SegmentId::new(self.id.clone(), self.is_appendable())
     }
 }
 

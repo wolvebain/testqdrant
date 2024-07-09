@@ -43,7 +43,18 @@ pub(crate) fn delete_points(
         .apply_points(
             ids,
             |_| (),
-            |id, _idx, write_segment, ()| write_segment.delete_point(op_num, id),
+            |id, _idx, write_segment, ()| {
+                let _span = tracing::info_span!(
+                    "delete_points",
+                    operation = op_num,
+                    point.id = %id,
+                    segment.id = %write_segment.id(),
+                    internal = true
+                )
+                .entered();
+
+                write_segment.delete_point(op_num, id)
+            },
         )
         .map_err(Into::into)
 }
@@ -427,6 +438,15 @@ where
         let segment_arc = default_write_segment.get();
         let mut write_segment = segment_arc.write();
         for point_id in new_point_ids {
+            let _span = tracing::info_span!(
+                "upsert_points/insert",
+                operation = op_num,
+                point.id = %point_id,
+                segment.id = %write_segment.id(),
+                internal = true
+            )
+            .entered();
+
             let point = points_map[&point_id];
             res += upsert_with_payload(
                 &mut write_segment,

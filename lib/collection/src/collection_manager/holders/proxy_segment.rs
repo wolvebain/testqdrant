@@ -11,7 +11,7 @@ use segment::data_types::named_vectors::NamedVectors;
 use segment::data_types::order_by::OrderValue;
 use segment::data_types::query_context::{QueryContext, SegmentQueryContext};
 use segment::data_types::vectors::{QueryVector, Vector};
-use segment::entry::entry_point::SegmentEntry;
+use segment::entry::entry_point::{SegmentEntry, SegmentId};
 use segment::index::field_index::CardinalityEstimation;
 use segment::json_path::JsonPath;
 use segment::telemetry::SegmentTelemetry;
@@ -31,6 +31,7 @@ type LockedFieldsMap = Arc<RwLock<HashMap<PayloadKeyType, PayloadFieldSchema>>>;
 /// It could be used to provide all read and write operations while wrapped segment is being optimized (i.e. not available for writing)
 /// It writes all changed records into a temporary `write_segment` and keeps track on changed points
 pub struct ProxySegment {
+    id: SegmentId,
     pub write_segment: LockedSegment,
     pub wrapped_segment: LockedSegment,
     /// Internal mask of deleted points, specific to the wrapped segment
@@ -55,6 +56,10 @@ impl ProxySegment {
         created_indexes: LockedFieldsMap,
         deleted_indexes: LockedFieldsSet,
     ) -> Self {
+        let wrapped_id = segment.get().read().id();
+        let write_id = write_segment.get().read().id();
+        let id = wrapped_id.append(write_id);
+
         let deleted_mask = match &segment {
             LockedSegment::Original(raw_segment) => {
                 let raw_segment_guard = raw_segment.read();
@@ -63,8 +68,11 @@ impl ProxySegment {
             }
             LockedSegment::Proxy(_) => None,
         };
+
         let wrapped_config = segment.get().read().config().clone();
+
         ProxySegment {
+            id,
             write_segment,
             wrapped_segment: segment,
             deleted_mask,
@@ -179,6 +187,11 @@ impl ProxySegment {
         }
 
         self.set_deleted_offset(point_offset);
+
+        tracing::info!(
+            internal = true,
+            "moved point {point_id} from wrapped into temporary segment"
+        );
 
         Ok(true)
     }
@@ -822,6 +835,9 @@ impl SegmentEntry for ProxySegment {
         let deleted_indexes_guard = self.deleted_indexes.read();
         let created_indexes_guard = self.created_indexes.read();
 
+        let _span =
+            tracing::info_span!("flush", segment.id = %self.id(), internal = true).entered();
+
         let wrapped_version = self.wrapped_segment.get().read().flush(sync, force)?;
         let write_segment_version = self.write_segment.get().read().flush(sync, force)?;
 
@@ -836,6 +852,8 @@ impl SegmentEntry for ProxySegment {
         };
 
         let _ = self.last_flushed_version.write().insert(flushed_version);
+
+        tracing::info!(internal = true, "proxy segment flushed: {flushed_version}");
 
         Ok(flushed_version)
     }
@@ -991,6 +1009,10 @@ impl SegmentEntry for ProxySegment {
             .get()
             .read()
             .fill_query_context(query_context)
+    }
+
+    fn id(&self) -> SegmentId {
+        self.id.clone()
     }
 }
 
