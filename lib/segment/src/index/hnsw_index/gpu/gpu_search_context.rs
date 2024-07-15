@@ -138,24 +138,32 @@ impl GpuSearchContext {
             .with_shader_code(include_str!("shaders/run_greedy_search.comp"))
             .with_element_type(gpu_vector_storage.element_type)
             .with_dim(gpu_vector_storage.dim)
+            .with_nearest_heap_capacity(gpu_nearest_heap.capacity)
+            .with_nearest_heap_ef(gpu_nearest_heap.ef)
             .build();
 
         let insert_shader = ShaderBuilder::new(device.clone())
             .with_shader_code(include_str!("shaders/run_insert_vector.comp"))
             .with_element_type(gpu_vector_storage.element_type)
             .with_dim(gpu_vector_storage.dim)
+            .with_nearest_heap_capacity(gpu_nearest_heap.capacity)
+            .with_nearest_heap_ef(gpu_nearest_heap.ef)
             .build();
 
         let search_shader = ShaderBuilder::new(device.clone())
             .with_shader_code(include_str!("shaders/tests/test_hnsw_search.comp"))
             .with_element_type(gpu_vector_storage.element_type)
             .with_dim(gpu_vector_storage.dim)
+            .with_nearest_heap_capacity(gpu_nearest_heap.capacity)
+            .with_nearest_heap_ef(gpu_nearest_heap.ef)
             .build();
 
         let patches_shader = ShaderBuilder::new(device.clone())
             .with_shader_code(include_str!("shaders/run_get_patch.comp"))
             .with_element_type(gpu_vector_storage.element_type)
             .with_dim(gpu_vector_storage.dim)
+            .with_nearest_heap_capacity(gpu_nearest_heap.capacity)
+            .with_nearest_heap_ef(gpu_nearest_heap.ef)
             .build();
 
         let greedy_descriptor_set_layout = gpu::DescriptorSetLayout::builder()
@@ -1049,6 +1057,8 @@ mod tests {
             .with_shader_code(include_str!("shaders/tests/test_heuristic.comp"))
             .with_element_type(test.gpu_search_context.gpu_vector_storage.element_type)
             .with_dim(test.gpu_search_context.gpu_vector_storage.dim)
+            .with_nearest_heap_capacity(test.gpu_search_context.gpu_nearest_heap.capacity)
+            .with_nearest_heap_ef(test.gpu_search_context.gpu_nearest_heap.ef)
             .build();
 
         let descriptor_set_layout = gpu::DescriptorSetLayout::builder()
