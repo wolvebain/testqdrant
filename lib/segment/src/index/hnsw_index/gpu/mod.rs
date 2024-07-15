@@ -8,6 +8,7 @@ pub mod gpu_nearest_heap;
 pub mod gpu_search_context;
 pub mod gpu_vector_storage;
 pub mod gpu_visited_flags;
+pub mod shader_builder;
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 

@@ -88,6 +88,7 @@ mod tests {
     use rand::{Rng, SeedableRng};
 
     use super::*;
+    use crate::index::hnsw_index::gpu::shader_builder::ShaderBuilder;
 
     #[repr(C)]
     struct TestParams {
@@ -115,14 +116,12 @@ mod tests {
         let device =
             Arc::new(gpu::Device::new(instance.clone(), instance.vk_physical_devices[0]).unwrap());
 
-        let mut context = gpu::Context::new(device.clone());
         let gpu_candidates_heap =
             GpuCandidatesHeap::new(device.clone(), groups_count, capacity).unwrap();
 
-        let shader = Arc::new(gpu::Shader::new(
-            device.clone(),
-            include_bytes!("./shaders/compiled/test_candidates_heap_f32.spv"),
-        ));
+        let shader = ShaderBuilder::new(device.clone(), device.subgroup_size())
+            .with_shader_code(include_str!("shaders/tests/test_candidates_heap.comp"))
+            .build();
 
         let input_points_buffer = Arc::new(
             gpu::Buffer::new(
@@ -142,6 +141,8 @@ mod tests {
             .unwrap(),
         );
         upload_staging_buffer.upload_slice(&inputs_data, 0);
+
+        let mut context = gpu::Context::new(device.clone());
         context.copy_gpu_buffer(
             upload_staging_buffer.clone(),
             input_points_buffer.clone(),

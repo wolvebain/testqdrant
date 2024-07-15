@@ -6,10 +6,11 @@ use itertools::Itertools;
 use super::gpu_candidates_heap::GpuCandidatesHeap;
 use super::gpu_links::GpuLinks;
 use super::gpu_nearest_heap::GpuNearestHeap;
-use super::gpu_vector_storage::{GpuVectorStorage, GpuVectorStorageElementType};
+use super::gpu_vector_storage::GpuVectorStorage;
 use super::gpu_visited_flags::GpuVisitedFlags;
 use crate::common::operation_error::{OperationError, OperationResult};
 use crate::index::hnsw_index::gpu::get_gpu_max_candidates_count;
+use crate::index::hnsw_index::gpu::shader_builder::ShaderBuilder;
 use crate::index::hnsw_index::graph_layers_builder::GraphLayersBuilder;
 use crate::vector_storage::quantized::quantized_vectors::QuantizedVectors;
 use crate::vector_storage::{VectorStorage, VectorStorageEnum};
@@ -95,7 +96,6 @@ impl GpuSearchContext {
         let instance = Arc::new(gpu::Instance::new("qdrant", debug_messenger, false).unwrap());
         let device =
             Arc::new(gpu::Device::new(instance.clone(), instance.vk_physical_devices[0]).unwrap());
-        let context = gpu::Context::new(device.clone());
         let points_count = vector_storage.total_vector_count();
         let candidates_capacity = get_gpu_max_candidates_count(); //points_count;
 
@@ -106,78 +106,6 @@ impl GpuSearchContext {
             force_half_precision,
         )?;
         let gpu_links = GpuLinks::new(device.clone(), m, m0, points_count, max_patched_points)?;
-
-        let greedy_search_shader = Arc::new(gpu::Shader::new(
-            device.clone(),
-            match gpu_vector_storage.element_type {
-                GpuVectorStorageElementType::Float32 => {
-                    include_bytes!("./shaders/compiled/run_greedy_search_f32.spv")
-                }
-                GpuVectorStorageElementType::Float16 => {
-                    include_bytes!("./shaders/compiled/run_greedy_search_f16.spv")
-                }
-                GpuVectorStorageElementType::Uint8 => {
-                    include_bytes!("./shaders/compiled/run_greedy_search_u8.spv")
-                }
-                GpuVectorStorageElementType::Binary => {
-                    include_bytes!("./shaders/compiled/run_greedy_search_binary.spv")
-                }
-            },
-        ));
-
-        let insert_shader = Arc::new(gpu::Shader::new(
-            device.clone(),
-            match gpu_vector_storage.element_type {
-                GpuVectorStorageElementType::Float32 => {
-                    include_bytes!("./shaders/compiled/run_insert_vector_f32.spv")
-                }
-                GpuVectorStorageElementType::Float16 => {
-                    include_bytes!("./shaders/compiled/run_insert_vector_f16.spv")
-                }
-                GpuVectorStorageElementType::Uint8 => {
-                    include_bytes!("./shaders/compiled/run_insert_vector_u8.spv")
-                }
-                GpuVectorStorageElementType::Binary => {
-                    include_bytes!("./shaders/compiled/run_insert_vector_binary.spv")
-                }
-            },
-        ));
-
-        let search_shader = Arc::new(gpu::Shader::new(
-            device.clone(),
-            match gpu_vector_storage.element_type {
-                GpuVectorStorageElementType::Float32 => {
-                    include_bytes!("./shaders/compiled/test_hnsw_search_f32.spv")
-                }
-                GpuVectorStorageElementType::Float16 => {
-                    include_bytes!("./shaders/compiled/test_hnsw_search_f16.spv")
-                }
-                GpuVectorStorageElementType::Uint8 => {
-                    include_bytes!("./shaders/compiled/test_hnsw_search_u8.spv")
-                }
-                GpuVectorStorageElementType::Binary => {
-                    include_bytes!("./shaders/compiled/test_hnsw_search_binary.spv")
-                }
-            },
-        ));
-
-        let patches_shader = Arc::new(gpu::Shader::new(
-            device.clone(),
-            match gpu_vector_storage.element_type {
-                GpuVectorStorageElementType::Float32 => {
-                    include_bytes!("./shaders/compiled/run_get_patch_f32.spv")
-                }
-                GpuVectorStorageElementType::Float16 => {
-                    include_bytes!("./shaders/compiled/run_get_patch_f16.spv")
-                }
-                GpuVectorStorageElementType::Uint8 => {
-                    include_bytes!("./shaders/compiled/run_get_patch_u8.spv")
-                }
-                GpuVectorStorageElementType::Binary => {
-                    include_bytes!("./shaders/compiled/run_get_patch_binary.spv")
-                }
-            },
-        ));
 
         let allocation_timer = std::time::Instant::now();
         let GpuSearchContextGroupAllocation {
@@ -205,6 +133,26 @@ impl GpuSearchContext {
             "GPU groups count = {groups_count} (max = {max_groups_count}), allocation time: {:?}",
             allocation_timer.elapsed()
         );
+
+        let greedy_search_shader = ShaderBuilder::new(device.clone(), device.subgroup_size())
+            .with_shader_code(include_str!("shaders/run_greedy_search.comp"))
+            .with_element_type(gpu_vector_storage.element_type)
+            .build();
+
+        let insert_shader = ShaderBuilder::new(device.clone(), device.subgroup_size())
+            .with_shader_code(include_str!("shaders/run_insert_vector.comp"))
+            .with_element_type(gpu_vector_storage.element_type)
+            .build();
+
+        let search_shader = ShaderBuilder::new(device.clone(), device.subgroup_size())
+            .with_shader_code(include_str!("shaders/tests/test_hnsw_search.comp"))
+            .with_element_type(gpu_vector_storage.element_type)
+            .build();
+
+        let patches_shader = ShaderBuilder::new(device.clone(), device.subgroup_size())
+            .with_shader_code(include_str!("shaders/run_get_patch.comp"))
+            .with_element_type(gpu_vector_storage.element_type)
+            .build();
 
         let greedy_descriptor_set_layout = gpu::DescriptorSetLayout::builder()
             .add_storage_buffer(0)
@@ -294,6 +242,7 @@ impl GpuSearchContext {
             .add_shader(insert_shader.clone())
             .build(device.clone());
 
+        let context = gpu::Context::new(device.clone());
         Ok(Self {
             gpu_vector_storage,
             gpu_links,
@@ -1092,23 +1041,14 @@ mod tests {
         );
 
         // Create test pipeline
-        let shader = Arc::new(gpu::Shader::new(
+        let shader = ShaderBuilder::new(
             test.gpu_search_context.device.clone(),
-            match test.gpu_search_context.gpu_vector_storage.element_type {
-                GpuVectorStorageElementType::Float32 => {
-                    include_bytes!("./shaders/compiled/test_heuristic_f32.spv")
-                }
-                GpuVectorStorageElementType::Float16 => {
-                    include_bytes!("./shaders/compiled/test_heuristic_f16.spv")
-                }
-                GpuVectorStorageElementType::Uint8 => {
-                    include_bytes!("./shaders/compiled/test_heuristic_u8.spv")
-                }
-                GpuVectorStorageElementType::Binary => {
-                    include_bytes!("./shaders/compiled/test_heuristic_binary.spv")
-                }
-            },
-        ));
+            test.gpu_search_context.device.subgroup_size(),
+        )
+        .with_shader_code(include_str!("shaders/tests/test_heuristic.comp"))
+        .with_element_type(test.gpu_search_context.gpu_vector_storage.element_type)
+        .build();
+
         let descriptor_set_layout = gpu::DescriptorSetLayout::builder()
             .add_storage_buffer(0)
             .add_storage_buffer(1)

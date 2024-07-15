@@ -445,6 +445,7 @@ mod tests {
     use crate::common::rocksdb_wrapper::{open_db, DB_VECTOR_CF};
     use crate::fixtures::index_fixtures::random_vector;
     use crate::fixtures::payload_fixtures::random_dense_byte_vector;
+    use crate::index::hnsw_index::gpu::shader_builder::ShaderBuilder;
     use crate::spaces::metric::Metric;
     use crate::spaces::simple::DotProductMetric;
     use crate::types::{
@@ -548,27 +549,10 @@ mod tests {
             .add_storage_buffer(0, scores_buffer.clone())
             .build();
 
-        let shader = Arc::new(gpu::Shader::new(
-            device.clone(),
-            match gpu_vector_storage.element_type {
-                GpuVectorStorageElementType::Float32 => {
-                    println!("Float32 shader");
-                    include_bytes!("./shaders/compiled/test_vector_storage_f32.spv")
-                }
-                GpuVectorStorageElementType::Float16 => {
-                    println!("Float16 shader");
-                    include_bytes!("./shaders/compiled/test_vector_storage_f16.spv")
-                }
-                GpuVectorStorageElementType::Uint8 => {
-                    println!("Uint8 shader");
-                    include_bytes!("./shaders/compiled/test_vector_storage_u8.spv")
-                }
-                GpuVectorStorageElementType::Binary => {
-                    println!("Binary shader");
-                    include_bytes!("./shaders/compiled/test_vector_storage_binary.spv")
-                }
-            },
-        ));
+        let shader = ShaderBuilder::new(device.clone(), device.subgroup_size())
+            .with_shader_code(include_str!("shaders/tests/test_vector_storage.comp"))
+            .with_element_type(gpu_vector_storage.element_type)
+            .build();
 
         let pipeline = gpu::Pipeline::builder()
             .add_descriptor_set_layout(0, descriptor_set_layout.clone())
@@ -726,27 +710,10 @@ mod tests {
             .add_storage_buffer(0, scores_buffer.clone())
             .build();
 
-        let shader = Arc::new(gpu::Shader::new(
-            device.clone(),
-            match gpu_vector_storage.element_type {
-                GpuVectorStorageElementType::Float32 => {
-                    println!("Float32 shader");
-                    include_bytes!("./shaders/compiled/test_vector_storage_f32.spv")
-                }
-                GpuVectorStorageElementType::Float16 => {
-                    println!("Float16 shader");
-                    include_bytes!("./shaders/compiled/test_vector_storage_f16.spv")
-                }
-                GpuVectorStorageElementType::Uint8 => {
-                    println!("Uint8 shader");
-                    include_bytes!("./shaders/compiled/test_vector_storage_u8.spv")
-                }
-                GpuVectorStorageElementType::Binary => {
-                    println!("Binary shader");
-                    include_bytes!("./shaders/compiled/test_vector_storage_binary.spv")
-                }
-            },
-        ));
+        let shader = ShaderBuilder::new(device.clone(), device.subgroup_size())
+            .with_shader_code(include_str!("shaders/tests/test_vector_storage.comp"))
+            .with_element_type(gpu_vector_storage.element_type)
+            .build();
 
         let pipeline = gpu::Pipeline::builder()
             .add_descriptor_set_layout(0, descriptor_set_layout.clone())
