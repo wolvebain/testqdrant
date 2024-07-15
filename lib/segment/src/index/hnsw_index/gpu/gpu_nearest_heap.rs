@@ -132,7 +132,7 @@ mod tests {
 
         let gpu_nearest_heap = GpuNearestHeap::new(device.clone(), groups_count, ef, ef).unwrap();
 
-        let shader = ShaderBuilder::new(device.clone(), device.subgroup_size())
+        let shader = ShaderBuilder::new(device.clone())
             .with_shader_code(include_str!("shaders/tests/test_nearest_heap.comp"))
             .build();
 

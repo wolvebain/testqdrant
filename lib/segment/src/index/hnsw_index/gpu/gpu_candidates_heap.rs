@@ -119,7 +119,7 @@ mod tests {
         let gpu_candidates_heap =
             GpuCandidatesHeap::new(device.clone(), groups_count, capacity).unwrap();
 
-        let shader = ShaderBuilder::new(device.clone(), device.subgroup_size())
+        let shader = ShaderBuilder::new(device.clone())
             .with_shader_code(include_str!("shaders/tests/test_candidates_heap.comp"))
             .build();
 

@@ -1,8 +1,6 @@
 #ifndef COMMON_HEADER
 #define COMMON_HEADER
 
-//#define SUBGROUP_SIZE gl_SubgroupSize
-#define SUBGROUP_SIZE 32
 #define SUBGROUP_ID (gl_GlobalInvocationID.x / SUBGROUP_SIZE)
 #define SUBGROUP_INVOCATION_ID gl_SubgroupInvocationID 
 

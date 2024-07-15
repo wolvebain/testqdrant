@@ -134,24 +134,28 @@ impl GpuSearchContext {
             allocation_timer.elapsed()
         );
 
-        let greedy_search_shader = ShaderBuilder::new(device.clone(), device.subgroup_size())
+        let greedy_search_shader = ShaderBuilder::new(device.clone())
             .with_shader_code(include_str!("shaders/run_greedy_search.comp"))
             .with_element_type(gpu_vector_storage.element_type)
+            .with_dim(gpu_vector_storage.dim)
             .build();
 
-        let insert_shader = ShaderBuilder::new(device.clone(), device.subgroup_size())
+        let insert_shader = ShaderBuilder::new(device.clone())
             .with_shader_code(include_str!("shaders/run_insert_vector.comp"))
             .with_element_type(gpu_vector_storage.element_type)
+            .with_dim(gpu_vector_storage.dim)
             .build();
 
-        let search_shader = ShaderBuilder::new(device.clone(), device.subgroup_size())
+        let search_shader = ShaderBuilder::new(device.clone())
             .with_shader_code(include_str!("shaders/tests/test_hnsw_search.comp"))
             .with_element_type(gpu_vector_storage.element_type)
+            .with_dim(gpu_vector_storage.dim)
             .build();
 
-        let patches_shader = ShaderBuilder::new(device.clone(), device.subgroup_size())
+        let patches_shader = ShaderBuilder::new(device.clone())
             .with_shader_code(include_str!("shaders/run_get_patch.comp"))
             .with_element_type(gpu_vector_storage.element_type)
+            .with_dim(gpu_vector_storage.dim)
             .build();
 
         let greedy_descriptor_set_layout = gpu::DescriptorSetLayout::builder()
@@ -1041,13 +1045,11 @@ mod tests {
         );
 
         // Create test pipeline
-        let shader = ShaderBuilder::new(
-            test.gpu_search_context.device.clone(),
-            test.gpu_search_context.device.subgroup_size(),
-        )
-        .with_shader_code(include_str!("shaders/tests/test_heuristic.comp"))
-        .with_element_type(test.gpu_search_context.gpu_vector_storage.element_type)
-        .build();
+        let shader = ShaderBuilder::new(test.gpu_search_context.device.clone())
+            .with_shader_code(include_str!("shaders/tests/test_heuristic.comp"))
+            .with_element_type(test.gpu_search_context.gpu_vector_storage.element_type)
+            .with_dim(test.gpu_search_context.gpu_vector_storage.dim)
+            .build();
 
         let descriptor_set_layout = gpu::DescriptorSetLayout::builder()
             .add_storage_buffer(0)

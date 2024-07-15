@@ -3,33 +3,10 @@ use std::sync::Arc;
 
 use super::gpu_vector_storage::GpuVectorStorageElementType;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum LayoutSetBinding {
-    VisitedFlags,
-    VectorStorage,
-    Links,
-    CandidatesHeap,
-    NearestHeap,
-}
-
-impl LayoutSetBinding {
-    pub fn to_string(self) -> &'static str {
-        match self {
-            LayoutSetBinding::VisitedFlags => "VISITED_FLAGS_LAYOUT_SET",
-            LayoutSetBinding::VectorStorage => "VECTOR_STORAGE_LAYOUT_SET",
-            LayoutSetBinding::Links => "LINKS_LAYOUT_SET",
-            LayoutSetBinding::CandidatesHeap => "CANDIDATES_HEAP_LAYOUT_SET",
-            LayoutSetBinding::NearestHeap => "NEAREST_HEAP_LAYOUT_SET",
-        }
-    }
-}
-
 pub struct ShaderBuilder {
     device: Arc<gpu::Device>,
-    working_group_size: usize,
     shader_code: String,
     element_type: Option<GpuVectorStorageElementType>,
-    layout_bindings: Vec<(LayoutSetBinding, usize)>,
     dim: Option<usize>,
     storages_count: Option<usize>,
     storage_size: Option<usize>,
@@ -41,7 +18,7 @@ pub struct ShaderBuilder {
 }
 
 impl ShaderBuilder {
-    pub fn new(device: Arc<gpu::Device>, working_group_size: usize) -> Self {
+    pub fn new(device: Arc<gpu::Device>) -> Self {
         let shaders_map = HashMap::from([
             (
                 "bheap.comp".to_string(),
@@ -95,10 +72,8 @@ impl ShaderBuilder {
 
         Self {
             device,
-            working_group_size,
             shader_code: Default::default(),
             element_type: None,
-            layout_bindings: Default::default(),
             dim: None,
             storages_count: None,
             storage_size: None,
@@ -156,11 +131,6 @@ impl ShaderBuilder {
         self
     }
 
-    pub fn with_layout(&mut self, layout: LayoutSetBinding, binding: usize) -> &mut Self {
-        self.layout_bindings.push((layout, binding));
-        self
-    }
-
     pub fn build(&self) -> Arc<gpu::Shader> {
         let mut options = shaderc::CompileOptions::new().unwrap();
         options.set_optimization_level(shaderc::OptimizationLevel::Performance);
@@ -170,10 +140,6 @@ impl ShaderBuilder {
         );
         options.set_target_spirv(shaderc::SpirvVersion::V1_3);
 
-        options.add_macro_definition(
-            "WORKING_GROUP_SIZE",
-            Some(&self.working_group_size.to_string()),
-        );
         options.add_macro_definition(
             "SUBGROUP_SIZE",
             Some(&self.device.subgroup_size().to_string()),
@@ -194,10 +160,6 @@ impl ShaderBuilder {
                     options.add_macro_definition("VECTOR_STORAGE_ELEMENT_BINARY", None)
                 }
             }
-        }
-
-        for (layout, binding) in &self.layout_bindings {
-            options.add_macro_definition(layout.to_string(), Some(&binding.to_string()));
         }
 
         if let Some(dim) = self.dim {
