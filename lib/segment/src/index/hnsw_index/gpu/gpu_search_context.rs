@@ -140,6 +140,8 @@ impl GpuSearchContext {
             .with_dim(gpu_vector_storage.dim)
             .with_nearest_heap_capacity(gpu_nearest_heap.capacity)
             .with_nearest_heap_ef(gpu_nearest_heap.ef)
+            .with_candidates_heap_capacity(gpu_candidates_heap.capacity)
+            .with_links_capacity(gpu_links.links_capacity)
             .build();
 
         let insert_shader = ShaderBuilder::new(device.clone())
@@ -148,6 +150,8 @@ impl GpuSearchContext {
             .with_dim(gpu_vector_storage.dim)
             .with_nearest_heap_capacity(gpu_nearest_heap.capacity)
             .with_nearest_heap_ef(gpu_nearest_heap.ef)
+            .with_candidates_heap_capacity(gpu_candidates_heap.capacity)
+            .with_links_capacity(gpu_links.links_capacity)
             .build();
 
         let search_shader = ShaderBuilder::new(device.clone())
@@ -156,6 +160,8 @@ impl GpuSearchContext {
             .with_dim(gpu_vector_storage.dim)
             .with_nearest_heap_capacity(gpu_nearest_heap.capacity)
             .with_nearest_heap_ef(gpu_nearest_heap.ef)
+            .with_candidates_heap_capacity(gpu_candidates_heap.capacity)
+            .with_links_capacity(gpu_links.links_capacity)
             .build();
 
         let patches_shader = ShaderBuilder::new(device.clone())
@@ -164,6 +170,8 @@ impl GpuSearchContext {
             .with_dim(gpu_vector_storage.dim)
             .with_nearest_heap_capacity(gpu_nearest_heap.capacity)
             .with_nearest_heap_ef(gpu_nearest_heap.ef)
+            .with_candidates_heap_capacity(gpu_candidates_heap.capacity)
+            .with_links_capacity(gpu_links.links_capacity)
             .build();
 
         let greedy_descriptor_set_layout = gpu::DescriptorSetLayout::builder()
@@ -1059,6 +1067,8 @@ mod tests {
             .with_dim(test.gpu_search_context.gpu_vector_storage.dim)
             .with_nearest_heap_capacity(test.gpu_search_context.gpu_nearest_heap.capacity)
             .with_nearest_heap_ef(test.gpu_search_context.gpu_nearest_heap.ef)
+            .with_candidates_heap_capacity(test.gpu_search_context.gpu_candidates_heap.capacity)
+            .with_links_capacity(test.gpu_search_context.gpu_links.links_capacity)
             .build();
 
         let descriptor_set_layout = gpu::DescriptorSetLayout::builder()
