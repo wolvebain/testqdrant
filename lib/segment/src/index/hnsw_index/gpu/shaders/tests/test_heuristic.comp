@@ -16,10 +16,7 @@ layout(local_size_x = SUBGROUP_SIZE, local_size_y = 1, local_size_z = 1) in;
 #define LINKS_LAYOUT_SET 2
 #include "links.comp"
 
-#define CANDIDATES_HEAP_LAYOUT_SET 3
-#include "candidates_heap.comp"
-
-#define VISITED_FLAGS_LAYOUT_SET 4
+#define VISITED_FLAGS_LAYOUT_SET 3
 #include "visited_flags.comp"
 
 #include "search_context.comp"

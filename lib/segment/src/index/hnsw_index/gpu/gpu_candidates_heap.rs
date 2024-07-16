@@ -1,44 +1,16 @@
 use std::sync::Arc;
 
-use common::types::ScoredPointOffset;
-
 pub struct GpuCandidatesHeap {
     pub capacity: usize,
     pub device: Arc<gpu::Device>,
-    pub candidates_buffer: Arc<gpu::Buffer>,
-    pub descriptor_set_layout: Arc<gpu::DescriptorSetLayout>,
-    pub descriptor_set: Arc<gpu::DescriptorSet>,
 }
 
 impl GpuCandidatesHeap {
-    pub fn new(
-        device: Arc<gpu::Device>,
-        groups_count: usize,
-        capacity: usize,
-    ) -> gpu::GpuResult<Self> {
+    pub fn new(device: Arc<gpu::Device>, capacity: usize) -> gpu::GpuResult<Self> {
         let ceiled_capacity = capacity.div_ceil(device.subgroup_size()) * device.subgroup_size();
-        let buffers_elements_count = ceiled_capacity * groups_count;
-
-        let candidates_buffer = Arc::new(gpu::Buffer::new(
-            device.clone(),
-            gpu::BufferType::Storage,
-            buffers_elements_count * std::mem::size_of::<ScoredPointOffset>(),
-        )?);
-
-        let descriptor_set_layout = gpu::DescriptorSetLayout::builder()
-            .add_storage_buffer(0)
-            .build(device.clone());
-
-        let descriptor_set = gpu::DescriptorSet::builder(descriptor_set_layout.clone())
-            .add_storage_buffer(0, candidates_buffer.clone())
-            .build();
-
         Ok(Self {
             capacity: ceiled_capacity,
             device,
-            candidates_buffer,
-            descriptor_set_layout,
-            descriptor_set,
         })
     }
 }
@@ -47,7 +19,7 @@ impl GpuCandidatesHeap {
 mod tests {
     use std::collections::BinaryHeap;
 
-    use common::types::PointOffsetType;
+    use common::types::{PointOffsetType, ScoredPointOffset};
     use rand::rngs::StdRng;
     use rand::{Rng, SeedableRng};
 
@@ -61,8 +33,8 @@ mod tests {
 
     #[test]
     fn test_gpu_candidates_heap() {
-        let capacity = 1024;
-        let points_count = 1024;
+        let capacity = 128;
+        let points_count = 128;
         let groups_count = 8;
         let inputs_count = points_count;
 
@@ -80,8 +52,7 @@ mod tests {
         let device =
             Arc::new(gpu::Device::new(instance.clone(), instance.vk_physical_devices[0]).unwrap());
 
-        let gpu_candidates_heap =
-            GpuCandidatesHeap::new(device.clone(), groups_count, capacity).unwrap();
+        let gpu_candidates_heap = GpuCandidatesHeap::new(device.clone(), capacity).unwrap();
 
         let shader = ShaderBuilder::new(device.clone())
             .with_shader_code(include_str!("shaders/tests/test_candidates_heap.comp"))
@@ -165,17 +136,10 @@ mod tests {
 
         let pipeline = gpu::Pipeline::builder()
             .add_descriptor_set_layout(0, descriptor_set_layout.clone())
-            .add_descriptor_set_layout(1, gpu_candidates_heap.descriptor_set_layout.clone())
             .add_shader(shader.clone())
             .build(device.clone());
 
-        context.bind_pipeline(
-            pipeline,
-            &[
-                descriptor_set.clone(),
-                gpu_candidates_heap.descriptor_set.clone(),
-            ],
-        );
+        context.bind_pipeline(pipeline, &[descriptor_set.clone()]);
         context.dispatch(groups_count, 1, 1);
         context.run();
         context.wait_finish();

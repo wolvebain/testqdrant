@@ -1,104 +1,15 @@
 #ifndef CANDIDATES_HEAP_HEADER
 #define CANDIDATES_HEAP_HEADER
 
-#ifndef CANDIDATES_HEAP_LAYOUT_SET
-#error "CANDIDATES_HEAP_LAYOUT_SET not defined"
-#endif
-
 #include "common.comp"
 
-layout(set = CANDIDATES_HEAP_LAYOUT_SET, binding = 0)
-buffer CandidatesScores {
-    ScoredPoint data[];
-} candidates;
-
+shared ScoredPoint candidates[CANDIDATES_HEAP_CAPACITY];
 uint candidates_count;
-
-#define CANDIDATES_BUFFER_OFFSET (CANDIDATES_HEAP_CAPACITY * SUBGROUP_ID)
-
-ScoredPoint preprocess_candidates_heap_value(ScoredPoint scored_point) {
-    scored_point.score = -scored_point.score; // TODO: revert direction
-    return scored_point;
-}
-
-ScoredPoint candidates_heap_replace_first(ScoredPoint node_value, ScoredPoint scored_point) {
-    bool need_change = scored_point.score > node_value.score;
-    uint invocation = SUBGROUP_INVOCATION_ID;
-    uint first_invocation = 0;
-    if (invocation == first_invocation) {
-        need_change = true;
-        node_value = scored_point;
-    }
-
-    uvec4 ballot = subgroupBallot(need_change);
-    bool right_need_change = false;
-
-    if (invocation + 1 < SUBGROUP_SIZE) {
-        right_need_change = subgroupBallotBitExtract(ballot, invocation + 1);
-    }
-
-    uint permut = invocation;
-    if (need_change && right_need_change) {
-        permut = invocation + 1;
-    }
-    if (need_change && !right_need_change) {
-        permut = first_invocation;
-    }
-
-    return ScoredPoint(
-        subgroupShuffle(node_value.id, permut),
-        subgroupShuffle(node_value.score, permut)
-    );
-}
-
-ScoredPoint candidates_heap_replace_last(ScoredPoint node_value, ScoredPoint scored_point) {
-    bool need_change = scored_point.score < node_value.score;
-    uint invocation = SUBGROUP_INVOCATION_ID;
-    uint last_invocation = SUBGROUP_SIZE - 1;
-    if (invocation == last_invocation) {
-        need_change = true;
-        node_value = scored_point;
-    }
-
-    uvec4 ballot = subgroupBallot(need_change);
-    bool left_need_change = false;
-
-    if (invocation > 0) {
-        left_need_change = subgroupBallotBitExtract(ballot, invocation - 1);
-    }
-
-    uint permut = invocation;
-    if (need_change && left_need_change) {
-        permut = invocation - 1;
-    }
-    if (need_change && !left_need_change) {
-        permut = last_invocation;
-    }
-
-    return ScoredPoint(
-        subgroupShuffle(node_value.id, permut),
-        subgroupShuffle(node_value.score, permut)
-    );
-}
-
-ScoredPoint candidates_heap_read(uint buffer_offset, uint node_index) {
-    uint buffer_index = buffer_offset + node_index * SUBGROUP_SIZE + SUBGROUP_INVOCATION_ID;
-    return candidates.data[buffer_index];
-}
-
-void candidates_heap_write(uint buffer_offset, uint node_index, ScoredPoint value) {
-    uint buffer_index = buffer_offset + node_index * SUBGROUP_SIZE + SUBGROUP_INVOCATION_ID;
-    candidates.data[buffer_index] = value;
-}
 
 void candidates_heap_init() {
     candidates_count = 0;
-
-    uint buffer_offset = CANDIDATES_BUFFER_OFFSET;
-    uint capacity = CANDIDATES_HEAP_CAPACITY;
-    for (uint i = SUBGROUP_INVOCATION_ID; i < capacity; i += SUBGROUP_SIZE) {
-        uint buffer_index = buffer_offset + i;
-        candidates.data[buffer_index] = ScoredPoint(0, positive_infinity);
+    for (uint i = SUBGROUP_INVOCATION_ID; i < CANDIDATES_HEAP_CAPACITY; i += SUBGROUP_SIZE) {
+        candidates[i] = ScoredPoint(0, positive_infinity);
     }
     groupMemoryBarrier();
 }
@@ -108,102 +19,58 @@ ScoredPoint pop_candidate() {
         return ScoredPoint(0, 0.0);
     }
 
-    uint buffer_offset = CANDIDATES_BUFFER_OFFSET;
-    ScoredPoint first_candidate = candidates.data[buffer_offset];
-    ScoredPoint last_candidate = candidates.data[buffer_offset + candidates_count - 1];
-    if (subgroupElect()) {
-        candidates.data[buffer_offset + candidates_count - 1] = ScoredPoint(0, positive_infinity);
+    ScoredPoint max_scored_point = ScoredPoint(0, negative_infinity);
+    uint max_index = 0;
+    for (uint i = SUBGROUP_INVOCATION_ID; i < candidates_count; i += SUBGROUP_SIZE) {
+        if (candidates[i].score > max_scored_point.score) {
+            max_scored_point = candidates[i];
+            max_index = i;
+        }
     }
-    groupMemoryBarrier();
+
     candidates_count--;
 
-    if (candidates_count == 0) {
-        return preprocess_candidates_heap_value(first_candidate);
+    float subgroup_largest = subgroupMax(max_scored_point.score);
+    bool is_max_thread = max_scored_point.score == subgroup_largest;
+    uvec4 subgroup_max_threads = subgroupBallot(is_max_thread);
+    uint subgroup_max_thread = subgroupBallotFindLSB(subgroup_max_threads);
+    max_index = subgroupShuffle(max_index, subgroup_max_thread);
+    max_scored_point.score = subgroupShuffle(max_scored_point.score, subgroup_max_thread);
+    max_scored_point.id = subgroupShuffle(max_scored_point.id, subgroup_max_thread);
+
+    if (subgroupElect()) {
+        candidates[max_index] = candidates[candidates_count];
     }
-
-    uint node_index = 0;
-    ScoredPoint node_value = candidates_heap_read(buffer_offset, node_index);
-    node_value = candidates_heap_replace_first(node_value, last_candidate);
-    while (true) {
-        uint left_index = 2 * node_index + 1;
-        // TODO: check candidates count, not capcity - we do additional checks in the loop
-        if (left_index * SUBGROUP_SIZE >= CANDIDATES_HEAP_CAPACITY) {
-            break;
-        }
-        uint child_index = left_index;
-        ScoredPoint child_value = candidates_heap_read(buffer_offset, child_index);
-        float child_smallest_score = subgroupBroadcast(child_value.score, 0);
-
-        uint right_index = left_index + 1;
-        if (right_index * SUBGROUP_SIZE < CANDIDATES_HEAP_CAPACITY) {
-            ScoredPoint right_value = candidates_heap_read(buffer_offset, right_index);
-            float right_smallest_score = subgroupBroadcast(right_value.score, 0);
-            if (right_smallest_score < child_smallest_score) {
-                child_index = right_index;
-                child_value = right_value;
-                child_smallest_score = right_smallest_score;
-            }
-        }
-
-        float node_largest_score = subgroupBroadcast(node_value.score, SUBGROUP_SIZE - 1);
-        if (node_largest_score < child_smallest_score) {
-            break;
-        }
-        uint node_largest_id = subgroupBroadcast(node_value.id, SUBGROUP_SIZE - 1);
-        ScoredPoint node_largest = ScoredPoint(node_largest_id, node_largest_score);
-
-        uint child_smallest_id = subgroupBroadcast(child_value.id, 0);
-        ScoredPoint child_smallest = ScoredPoint(child_smallest_id, child_smallest_score);
-
-        child_value = candidates_heap_replace_first(child_value, node_largest);
-        node_value = candidates_heap_replace_last(node_value, child_smallest);
-
-        candidates_heap_write(buffer_offset, node_index, node_value);
-        node_value = child_value;
-        node_index = child_index;
-    }
-
-    candidates_heap_write(buffer_offset, node_index, node_value);
     groupMemoryBarrier();
-    return preprocess_candidates_heap_value(first_candidate);
+    return max_scored_point;
 }
 
 bool push_candidate(ScoredPoint scored_point) {
-    scored_point = preprocess_candidates_heap_value(scored_point);
     if (candidates_count == CANDIDATES_HEAP_CAPACITY) {
-        return false;
-    }
-
-    uint buffer_offset = CANDIDATES_BUFFER_OFFSET;
-    uint node_index = candidates_count / SUBGROUP_SIZE;
-    ScoredPoint node_value = candidates_heap_read(buffer_offset, node_index);
-    node_value = candidates_heap_replace_last(node_value, scored_point);
-
-    while (true) {
-        if (node_index == 0) {
-            break;
+        ScoredPoint min_scored_point = ScoredPoint(0, positive_infinity);
+        uint min_index = 0;
+        for (uint i = SUBGROUP_INVOCATION_ID; i < candidates_count; i += SUBGROUP_SIZE) {
+            if (candidates[i].score < min_scored_point.score) {
+                min_scored_point = candidates[i];
+                min_index = i;
+            }
         }
-        uint parent_index = (node_index - 1) / 2;
-        ScoredPoint parent_value = candidates_heap_read(buffer_offset, parent_index);
-        float node_smallest_score = subgroupBroadcast(node_value.score, 0);
-        float parent_largest_score = subgroupBroadcast(parent_value.score, SUBGROUP_SIZE - 1);
-        if (node_smallest_score < parent_largest_score) {
-            uint node_smallest_id = subgroupBroadcast(node_value.id, 0);
-            uint parent_largest_id = subgroupBroadcast(parent_value.id, SUBGROUP_SIZE - 1);
-            ScoredPoint node_smallest = ScoredPoint(node_smallest_id, node_smallest_score);
-            ScoredPoint parent_largest = ScoredPoint(parent_largest_id, parent_largest_score);
-            node_value = candidates_heap_replace_first(node_value, parent_largest);
-            parent_value = candidates_heap_replace_last(parent_value, node_smallest);
-            candidates_heap_write(buffer_offset, node_index, node_value);
-            node_value = parent_value;
-            node_index = parent_index;
-        } else {
-            break;
-        }
-    }
 
-    candidates_heap_write(buffer_offset, node_index, node_value);
-    candidates_count++;
+        float subgroup_smallest = subgroupMin(min_scored_point.score);
+        bool is_min_thread = min_scored_point.score == subgroup_smallest;
+        uvec4 subgroup_min_threads = subgroupBallot(is_min_thread);
+        uint subgroup_min_thread = subgroupBallotFindLSB(subgroup_min_threads);
+        min_index = subgroupShuffle(min_index, subgroup_min_thread);
+        
+        if (subgroupElect()) {
+            candidates[min_index] = scored_point;
+        }
+    } else {
+        if (subgroupElect()) {
+            candidates[candidates_count] = scored_point;
+        }
+        candidates_count++;
+    }
     groupMemoryBarrier();
     return true;
 }

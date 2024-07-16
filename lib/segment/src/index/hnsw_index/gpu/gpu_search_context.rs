@@ -9,7 +9,6 @@ use super::gpu_nearest_heap::GpuNearestHeap;
 use super::gpu_vector_storage::GpuVectorStorage;
 use super::gpu_visited_flags::GpuVisitedFlags;
 use crate::common::operation_error::{OperationError, OperationResult};
-use crate::index::hnsw_index::gpu::get_gpu_max_candidates_count;
 use crate::index::hnsw_index::gpu::shader_builder::ShaderBuilder;
 use crate::index::hnsw_index::graph_layers_builder::GraphLayersBuilder;
 use crate::vector_storage::quantized::quantized_vectors::QuantizedVectors;
@@ -97,7 +96,6 @@ impl GpuSearchContext {
         let device =
             Arc::new(gpu::Device::new(instance.clone(), instance.vk_physical_devices[0]).unwrap());
         let points_count = vector_storage.total_vector_count();
-        let candidates_capacity = get_gpu_max_candidates_count(); //points_count;
 
         let gpu_vector_storage = GpuVectorStorage::new(
             device.clone(),
@@ -120,15 +118,8 @@ impl GpuSearchContext {
             search_responses_buffer,
             patches_responses_buffer,
             insert_atomics_buffer,
-        } = Self::allocate_grouped_data(
-            device.clone(),
-            max_groups_count,
-            points_count,
-            candidates_capacity,
-            ef,
-            m0,
-        )
-        .map_err(|_| OperationError::service_error("Failed to allocate gpu data"))?;
+        } = Self::allocate_grouped_data(device.clone(), max_groups_count, points_count, ef, m0)
+            .map_err(|_| OperationError::service_error("Failed to allocate gpu data"))?;
         println!(
             "GPU groups count = {groups_count} (max = {max_groups_count}), allocation time: {:?}",
             allocation_timer.elapsed()
@@ -189,8 +180,7 @@ impl GpuSearchContext {
             .add_descriptor_set_layout(0, greedy_descriptor_set_layout.clone())
             .add_descriptor_set_layout(1, gpu_vector_storage.descriptor_set_layout.clone())
             .add_descriptor_set_layout(2, gpu_links.descriptor_set_layout.clone())
-            .add_descriptor_set_layout(3, gpu_candidates_heap.descriptor_set_layout.clone())
-            .add_descriptor_set_layout(4, gpu_visited_flags.descriptor_set_layout.clone())
+            .add_descriptor_set_layout(3, gpu_visited_flags.descriptor_set_layout.clone())
             .add_shader(greedy_search_shader.clone())
             .build(device.clone());
 
@@ -209,8 +199,7 @@ impl GpuSearchContext {
             .add_descriptor_set_layout(0, search_descriptor_set_layout.clone())
             .add_descriptor_set_layout(1, gpu_vector_storage.descriptor_set_layout.clone())
             .add_descriptor_set_layout(2, gpu_links.descriptor_set_layout.clone())
-            .add_descriptor_set_layout(3, gpu_candidates_heap.descriptor_set_layout.clone())
-            .add_descriptor_set_layout(4, gpu_visited_flags.descriptor_set_layout.clone())
+            .add_descriptor_set_layout(3, gpu_visited_flags.descriptor_set_layout.clone())
             .add_shader(search_shader.clone())
             .build(device.clone());
 
@@ -231,8 +220,7 @@ impl GpuSearchContext {
             .add_descriptor_set_layout(0, patches_descriptor_set_layout.clone())
             .add_descriptor_set_layout(1, gpu_vector_storage.descriptor_set_layout.clone())
             .add_descriptor_set_layout(2, gpu_links.descriptor_set_layout.clone())
-            .add_descriptor_set_layout(3, gpu_candidates_heap.descriptor_set_layout.clone())
-            .add_descriptor_set_layout(4, gpu_visited_flags.descriptor_set_layout.clone())
+            .add_descriptor_set_layout(3, gpu_visited_flags.descriptor_set_layout.clone())
             .add_shader(patches_shader.clone())
             .build(device.clone());
 
@@ -253,8 +241,7 @@ impl GpuSearchContext {
             .add_descriptor_set_layout(0, insert_descriptor_set_layout.clone())
             .add_descriptor_set_layout(1, gpu_vector_storage.descriptor_set_layout.clone())
             .add_descriptor_set_layout(2, gpu_links.descriptor_set_layout.clone())
-            .add_descriptor_set_layout(3, gpu_candidates_heap.descriptor_set_layout.clone())
-            .add_descriptor_set_layout(4, gpu_visited_flags.descriptor_set_layout.clone())
+            .add_descriptor_set_layout(3, gpu_visited_flags.descriptor_set_layout.clone())
             .add_shader(insert_shader.clone())
             .build(device.clone());
 
@@ -295,7 +282,6 @@ impl GpuSearchContext {
         device: Arc<gpu::Device>,
         mut max_groups_count: usize,
         points_count: usize,
-        candidates_capacity: usize,
         ef: usize,
         m0: usize,
     ) -> gpu::GpuResult<GpuSearchContextGroupAllocation> {
@@ -304,7 +290,6 @@ impl GpuSearchContext {
                 device.clone(),
                 max_groups_count,
                 points_count,
-                candidates_capacity,
                 ef,
                 m0,
             ) {
@@ -319,7 +304,6 @@ impl GpuSearchContext {
         device: Arc<gpu::Device>,
         groups_count: usize,
         points_count: usize,
-        candidates_capacity: usize,
         ef: usize,
         m0: usize,
     ) -> gpu::GpuResult<GpuSearchContextGroupAllocation> {
@@ -336,7 +320,7 @@ impl GpuSearchContext {
 
         let gpu_nearest_heap = GpuNearestHeap::new(device.clone(), ef, std::cmp::max(ef, m0 + 1))?;
         let gpu_candidates_heap =
-            GpuCandidatesHeap::new(device.clone(), groups_count, candidates_capacity)?;
+            GpuCandidatesHeap::new(device.clone(), std::cmp::max(ef, m0 + 1))?;
         let gpu_visited_flags = GpuVisitedFlags::new(device.clone(), groups_count, points_count)?;
 
         let patches_responses_buffer = Arc::new(gpu::Buffer::new(
@@ -436,7 +420,6 @@ impl GpuSearchContext {
                 self.search_descriptor_set.clone(),
                 self.gpu_vector_storage.descriptor_set.clone(),
                 self.gpu_links.descriptor_set.clone(),
-                self.gpu_candidates_heap.descriptor_set.clone(),
                 self.gpu_visited_flags.descriptor_set.clone(),
             ],
         );
@@ -512,7 +495,6 @@ impl GpuSearchContext {
                 self.greedy_descriptor_set.clone(),
                 self.gpu_vector_storage.descriptor_set.clone(),
                 self.gpu_links.descriptor_set.clone(),
-                self.gpu_candidates_heap.descriptor_set.clone(),
                 self.gpu_visited_flags.descriptor_set.clone(),
             ],
         );
@@ -582,7 +564,6 @@ impl GpuSearchContext {
                 self.insert_descriptor_set.clone(),
                 self.gpu_vector_storage.descriptor_set.clone(),
                 self.gpu_links.descriptor_set.clone(),
-                self.gpu_candidates_heap.descriptor_set.clone(),
                 self.gpu_visited_flags.descriptor_set.clone(),
             ],
         );
@@ -631,7 +612,6 @@ impl GpuSearchContext {
                 self.patches_descriptor_set.clone(),
                 self.gpu_vector_storage.descriptor_set.clone(),
                 self.gpu_links.descriptor_set.clone(),
-                self.gpu_candidates_heap.descriptor_set.clone(),
                 self.gpu_visited_flags.descriptor_set.clone(),
             ],
         );
@@ -1091,13 +1071,6 @@ mod tests {
             .add_descriptor_set_layout(
                 3,
                 test.gpu_search_context
-                    .gpu_candidates_heap
-                    .descriptor_set_layout
-                    .clone(),
-            )
-            .add_descriptor_set_layout(
-                4,
-                test.gpu_search_context
                     .gpu_visited_flags
                     .descriptor_set_layout
                     .clone(),
@@ -1114,10 +1087,6 @@ mod tests {
                     .descriptor_set
                     .clone(),
                 test.gpu_search_context.gpu_links.descriptor_set.clone(),
-                test.gpu_search_context
-                    .gpu_candidates_heap
-                    .descriptor_set
-                    .clone(),
                 test.gpu_search_context
                     .gpu_visited_flags
                     .descriptor_set
