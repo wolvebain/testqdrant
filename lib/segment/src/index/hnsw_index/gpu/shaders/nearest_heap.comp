@@ -106,7 +106,7 @@ void bitonic_cmp(uint i, uint j) {
     }
 }
 
-void sort_nearest() {
+void sort_nearest_bitonic() {
     for (uint k = 2; (k >> 1) < nearest_count; k <<= 1) {
         for (uint i = SUBGROUP_INVOCATION_ID; i < nearest_count; i += SUBGROUP_SIZE) {
             bitonic_cmp(i, i ^ (k - 1));
@@ -118,6 +118,96 @@ void sort_nearest() {
                 bitonic_cmp(i, i ^ j);
             }
             groupMemoryBarrier();
+        }
+    }
+}
+
+uint subgroup_bubble_sort(float score) {
+    uint invocation = SUBGROUP_INVOCATION_ID;
+    bool is_even = invocation % 2 == 0;
+    uint invocation_forward = is_even ? invocation + 1 : invocation - 1;
+    uint invocation_backward = invocation;
+    if (invocation != SUBGROUP_SIZE - 1 && invocation != 0) {
+        invocation_backward = is_even ? invocation - 1 : invocation + 1;
+    }
+
+    uint index = invocation;
+    for (uint j = 0; j < SUBGROUP_SIZE / 2; j++) {
+        bool is_even = SUBGROUP_INVOCATION_ID % 2 == 0;
+        bool was_changed = false;
+
+        // step one: compare with the next element
+        {
+            float next_score = subgroupShuffle(score, invocation_forward);
+            uint next_index = subgroupShuffle(index, invocation_forward);
+            bool need_exchange = is_even ? score < next_score : score > next_score;
+            if (need_exchange) {
+                was_changed = true;
+                score = next_score;
+                index = next_index;
+            }
+        }
+
+        // step two: compare with previous element
+        {
+            float next_score = subgroupShuffle(score, invocation_backward);
+            uint next_index = subgroupShuffle(index, invocation_backward);
+            bool need_exchange = is_even ? score > next_score : score < next_score;
+            if (need_exchange) {
+                was_changed = true;
+                score = next_score;
+                index = next_index;
+            }
+        }
+
+        if (!subgroupAny(was_changed)) {
+            break;
+        }
+    }
+    return index;
+}
+
+void sort_nearest() {
+    uint buffer_offset = NEAREST_BUFFER_OFFSET;
+
+    uint iterations_count = nearest_count / (SUBGROUP_SIZE / 2) + uint(sign(float(nearest_count % (SUBGROUP_SIZE / 2))));
+    for (uint _cnt = 0; _cnt < iterations_count; _cnt++) {
+        // do bubble sort in each subgroup to reduce the number of memory accesses
+        for (uint i = SUBGROUP_INVOCATION_ID; i < NEAREST_HEAP_CAPACITY; i += SUBGROUP_SIZE) {
+            ScoredPoint scored_point = ScoredPoint(
+                nearest_id.data[buffer_offset + i],
+                nearest_score.data[buffer_offset + i]
+            );
+
+            if (i >= nearest_count) {
+                scored_point.score = negative_infinity;
+            }
+            uint permut = subgroup_bubble_sort(scored_point.score);
+            float shuffled_scored_point_score = subgroupShuffle(scored_point.score, permut);
+            uint shuffled_scored_point_id = subgroupShuffle(scored_point.id, permut);
+            nearest_id.data[buffer_offset + i] = shuffled_scored_point_id;
+            nearest_score.data[buffer_offset + i] = shuffled_scored_point_score;
+            groupMemoryBarrier();
+        }
+
+        if (NEAREST_HEAP_CAPACITY > SUBGROUP_SIZE) {
+            // do bubble sort in each subgroup to reduce the number of memory accesses
+            for (uint i = SUBGROUP_INVOCATION_ID + (SUBGROUP_SIZE / 2); i < NEAREST_HEAP_CAPACITY - (SUBGROUP_SIZE / 2); i += SUBGROUP_SIZE) {
+                ScoredPoint scored_point = ScoredPoint(
+                    nearest_id.data[buffer_offset + i],
+                    nearest_score.data[buffer_offset + i]
+                );
+                
+                if (i >= nearest_count) {
+                    scored_point.score = negative_infinity;
+                }
+                uint permut = subgroup_bubble_sort(scored_point.score);
+                float shuffled_scored_point_score = subgroupShuffle(scored_point.score, permut);
+                uint shuffled_scored_point_id = subgroupShuffle(scored_point.id, permut);
+                nearest_id.data[buffer_offset + i] = shuffled_scored_point_id;
+                nearest_score.data[buffer_offset + i] = shuffled_scored_point_score;
+                groupMemoryBarrier();
+            }
         }
     }
 }
