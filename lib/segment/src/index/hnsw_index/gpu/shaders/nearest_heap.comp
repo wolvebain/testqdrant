@@ -72,32 +72,6 @@ bool push_nearest(ScoredPoint scored_point) {
     }
 }
 
-void bitonic_cmp(uint i, uint j) {
-    uint b_i = i;
-    uint b_j = j;
-    if (i < j && j < nearest_count && nearest[b_j].score > nearest[b_i].score) {
-        ScoredPoint temp = nearest[b_i];
-        nearest[b_i] = nearest[b_j];
-        nearest[b_j] = temp;
-    }
-}
-
-void sort_nearest_bitonic() {
-    for (uint k = 2; (k >> 1) < nearest_count; k <<= 1) {
-        for (uint i = SUBGROUP_INVOCATION_ID; i < nearest_count; i += SUBGROUP_SIZE) {
-            bitonic_cmp(i, i ^ (k - 1));
-        }
-        groupMemoryBarrier();
-
-        for (uint j = k >> 1; 0 < j; j >>= 1) {
-            for (uint i = SUBGROUP_INVOCATION_ID; i < nearest_count; i += SUBGROUP_SIZE) {
-                bitonic_cmp(i, i ^ j);
-            }
-            groupMemoryBarrier();
-        }
-    }
-}
-
 uint subgroup_bubble_sort(float score) {
     uint invocation = SUBGROUP_INVOCATION_ID;
     bool is_even = invocation % 2 == 0;
@@ -143,7 +117,7 @@ uint subgroup_bubble_sort(float score) {
     return index;
 }
 
-void sort_nearest() {
+void sort_nearest_bubble() {
     uint iterations_count = nearest_count / (SUBGROUP_SIZE / 2) + uint(sign(float(nearest_count % (SUBGROUP_SIZE / 2))));
     for (uint _cnt = 0; _cnt < iterations_count; _cnt++) {
         // do bubble sort in each subgroup to reduce the number of memory accesses
@@ -174,6 +148,50 @@ void sort_nearest() {
                 nearest[i] = ScoredPoint(shuffled_scored_point_id, shuffled_scored_point_score);
                 groupMemoryBarrier();
             }
+        }
+    }
+}
+
+void bitonic_cmp(uint i, uint j) {
+    uint b_i = i;
+    uint b_j = j;
+    if (i < j && j < nearest_count && nearest[b_j].score > nearest[b_i].score) {
+        ScoredPoint temp = nearest[b_i];
+        nearest[b_i] = nearest[b_j];
+        nearest[b_j] = temp;
+    }
+}
+
+void sort_nearest() {
+    for (uint group_offset = 0; group_offset < nearest_count; group_offset += SUBGROUP_SIZE) {
+        ScoredPoint scored_point = ScoredPoint(0, negative_infinity);
+        uint i = group_offset + SUBGROUP_INVOCATION_ID;
+        if (i < nearest_count) {
+            scored_point = nearest[i];
+        }
+
+        uint permut = subgroup_bubble_sort(scored_point.score);
+        scored_point = ScoredPoint(
+            subgroupShuffle(scored_point.id, permut),
+            subgroupShuffle(scored_point.score, permut)
+        );
+
+        if (i < nearest_count) {
+            nearest[i] = scored_point;
+        }
+    }
+
+    for (uint k = 64; (k >> 1) < nearest_count; k <<= 1) {
+        for (uint i = SUBGROUP_INVOCATION_ID; i < nearest_count; i += SUBGROUP_SIZE) {
+            bitonic_cmp(i, i ^ (k - 1));
+        }
+        groupMemoryBarrier();
+
+        for (uint j = k >> 1; 0 < j; j >>= 1) {
+            for (uint i = SUBGROUP_INVOCATION_ID; i < nearest_count; i += SUBGROUP_SIZE) {
+                bitonic_cmp(i, i ^ j);
+            }
+            groupMemoryBarrier();
         }
     }
 }
