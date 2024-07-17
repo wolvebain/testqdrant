@@ -45,7 +45,12 @@ void main() {
 
     set_target(request.id);
     float entry_score = similarity(request.entry);
+#ifdef NO_EQUIVALENCY
+    ScoredPoint new_entry = greedy_search(request.id, ScoredPoint(request.entry, entry_score));
+    uint search_count = search(request.id, new_entry);
+#else
     uint search_count = search(request.id, ScoredPoint(request.entry, entry_score));
+#endif
     if (search_count == UINT_MAX) {
         // error while searching. propably candidates heap overflow
         return;
