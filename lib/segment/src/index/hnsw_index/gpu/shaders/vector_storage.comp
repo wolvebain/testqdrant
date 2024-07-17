@@ -61,100 +61,79 @@ VECTOR_STORAGE_DEFINE(1)
 VECTOR_STORAGE_DEFINE(2)
 VECTOR_STORAGE_DEFINE(3)
 
-#define VECTOR_STORAGE_SCORE_SUBGROUP(STORAGE_INDEX_A, STORAGE_INDEX_B) \
-    for (uint i = 0; i < d; i += SUBGROUP_SIZE, aIndex += SUBGROUP_SIZE, bIndex += SUBGROUP_SIZE) { \
+#if DIM / (4 * SUBGROUP_SIZE) > 1
+
+#define VECTOR_STORAGE_SCORE_SUBGROUP(STORAGE_INDEX) \
+    for (uint i = 0; i < DIM / (4 * SUBGROUP_SIZE); i++, index += SUBGROUP_SIZE) { \
         result += VECTOR_STORAGE_SCORE_ELEMENT( \
-            STORAGE(STORAGE_INDEX_A).data[aIndex], \
-            STORAGE(STORAGE_INDEX_B).data[bIndex] \
+            STORAGE(STORAGE_INDEX).data[index], \
+            target_cache[i] \
         ); \
     }
 
-uint target_id;
+#define VECTOR_STORAGE_SET_TARGET(STORAGE_INDEX) \
+    for (uint i = 0; i < DIM / (4 * SUBGROUP_SIZE); i++, index += SUBGROUP_SIZE) { \
+        target_cache[i] = STORAGE(STORAGE_INDEX).data[index]; \
+    }
+
+VECTOR_STORAGE_ELEMENT_TYPE target_cache[DIM / (4 * SUBGROUP_SIZE)];
+
+#else
+
+#define VECTOR_STORAGE_SCORE_SUBGROUP(STORAGE_INDEX) \
+    result += VECTOR_STORAGE_SCORE_ELEMENT( \
+        STORAGE(STORAGE_INDEX).data[index], \
+        target_cache \
+    );
+
+#define VECTOR_STORAGE_SET_TARGET(STORAGE_INDEX) \
+    target_cache = STORAGE(STORAGE_INDEX).data[index];
+
+VECTOR_STORAGE_ELEMENT_TYPE target_cache;
+
+#endif
 
 void set_target(uint point_id) {
-    target_id = point_id;
+    uint index = (point_id / STORAGES_COUNT) * (DIM / 4) + SUBGROUP_INVOCATION_ID;
+    uint storage_index = point_id % STORAGES_COUNT;
+    switch (storage_index) {
+    case 0:
+        VECTOR_STORAGE_SET_TARGET(0);
+        break;
+    case 1:
+        VECTOR_STORAGE_SET_TARGET(1);
+        break;
+    case 2:
+        VECTOR_STORAGE_SET_TARGET(2);
+        break;
+    case 3:
+        VECTOR_STORAGE_SET_TARGET(3);
+        break;
+    }
 }
 
 float similarity(uint point_id) {
-    uint a = point_id;
-    uint b = target_id;
     float result = 0.0;
-    uint d = DIM / 4;
-    uint aIndex = (a / STORAGES_COUNT) * d + SUBGROUP_INVOCATION_ID;
-    uint bIndex = (b / STORAGES_COUNT) * d + SUBGROUP_INVOCATION_ID;
-    uint storage_index_a = a % STORAGES_COUNT;
-    uint storage_index_b = b % STORAGES_COUNT;
-
-    switch (storage_index_a) {
+    uint index = (point_id / STORAGES_COUNT) * (DIM / 4) + SUBGROUP_INVOCATION_ID;
+    uint storage_index = point_id % STORAGES_COUNT;
+    switch (storage_index) {
     case 0:
-        switch (storage_index_b) {
-        case 0:
-            VECTOR_STORAGE_SCORE_SUBGROUP(0, 0);
-            break;
-        case 1:
-            VECTOR_STORAGE_SCORE_SUBGROUP(0, 1);
-            break;
-        case 2:
-            VECTOR_STORAGE_SCORE_SUBGROUP(0, 2);
-            break;
-        case 3:
-            VECTOR_STORAGE_SCORE_SUBGROUP(0, 3);
-            break;
-        }
+        VECTOR_STORAGE_SCORE_SUBGROUP(0);
         break;
     case 1:
-        switch (storage_index_b) {
-        case 0:
-            VECTOR_STORAGE_SCORE_SUBGROUP(1, 0);
-            break;
-        case 1:
-            VECTOR_STORAGE_SCORE_SUBGROUP(1, 1);
-            break;
-        case 2:
-            VECTOR_STORAGE_SCORE_SUBGROUP(1, 2);
-            break;
-        case 3:
-            VECTOR_STORAGE_SCORE_SUBGROUP(1, 3);
-            break;
-        }
+        VECTOR_STORAGE_SCORE_SUBGROUP(1);
         break;
     case 2:
-        switch (storage_index_b) {
-        case 0:
-            VECTOR_STORAGE_SCORE_SUBGROUP(2, 0);
-            break;
-        case 1:
-            VECTOR_STORAGE_SCORE_SUBGROUP(2, 1);
-            break;
-        case 2:
-            VECTOR_STORAGE_SCORE_SUBGROUP(2, 2);
-            break;
-        case 3:
-            VECTOR_STORAGE_SCORE_SUBGROUP(2, 3);
-            break;
-        }
+        VECTOR_STORAGE_SCORE_SUBGROUP(2);
         break;
     case 3:
-        switch (storage_index_b) {
-        case 0:
-            VECTOR_STORAGE_SCORE_SUBGROUP(3, 0);
-            break;
-        case 1:
-            VECTOR_STORAGE_SCORE_SUBGROUP(3, 1);
-            break;
-        case 2:
-            VECTOR_STORAGE_SCORE_SUBGROUP(3, 2);
-            break;
-        case 3:
-            VECTOR_STORAGE_SCORE_SUBGROUP(3, 3);
-            break;
-        }
+        VECTOR_STORAGE_SCORE_SUBGROUP(3);
         break;
     }
 
 #ifdef VECTOR_STORAGE_ELEMENT_BINARY
     float xor_product = subgroupAdd(result);
-    float zeros_count = float(d * 32) - xor_product;
+    float zeros_count = float((DIM / 4) * 32) - xor_product;
     return zeros_count - xor_product;
 #else
     return subgroupAdd(result);
