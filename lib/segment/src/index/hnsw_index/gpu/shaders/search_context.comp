@@ -8,16 +8,15 @@
 #include "candidates_heap.comp"
 #include "visited_flags.comp"
 
-bool process_candidate(ScoredPoint scored_point) {
+void process_candidate(ScoredPoint scored_point) {
     bool not_presented = nearest_smaller.id != scored_point.id;
     bool was_added = push_nearest(scored_point);
     if (was_added && not_presented) {
-        return push_candidate(scored_point);
+        push_candidate(scored_point);
     }
-    return true;
 }
 
-bool process_candidate(POINT_ID point_id, POINT_ID candidate_id) {
+void process_candidate(POINT_ID candidate_id) {
     uint links_count = LINKS_COUNT(candidate_id);
     uint subgroup_link = 0;
     bool subgroup_is_visited = true;
@@ -38,17 +37,12 @@ bool process_candidate(POINT_ID point_id, POINT_ID candidate_id) {
         if (!is_visited) {
             float score = similarity(link);
             ScoredPoint scored_point = ScoredPoint(link, score);
-            bool success = process_candidate(scored_point);
-            if (!success) {
-                return false;
-            }
+            process_candidate(scored_point);
         }
     }
 
     // flush all changed visited flags
     groupMemoryBarrier();
-
-    return true;
 }
 
 uint search(POINT_ID point_id, ScoredPoint entry) {
@@ -64,10 +58,10 @@ uint search(POINT_ID point_id, ScoredPoint entry) {
         if (candidate.score < nearest_smaller.score) {
             continue;
         }
-        process_candidate(point_id, candidate.id);
+        process_candidate(candidate.id);
     }
 
-    process_candidate(point_id, point_id);
+    process_candidate(point_id);
 
     sort_nearest();
     return nearest_count;
