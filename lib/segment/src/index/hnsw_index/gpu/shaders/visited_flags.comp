@@ -7,6 +7,7 @@
 
 #include "common.comp"
 #include "vector_storage.comp"
+#include "nearest_heap.comp"
 
 layout(set = VISITED_FLAGS_LAYOUT_SET, binding = 0)
 readonly uniform VisitedFlagsParams {
@@ -22,17 +23,46 @@ buffer VisitedFlagsBuffer {
 #define BYTE_MASK 0xFF
 #define VISITED_GENERATION visited_flags_params.generation
 
-bool is_visited(POINT_ID point_id) {
-    uint subgroup_index = SUBGROUP_ID;
-    uint index = subgroup_index * visited_flags_params.capacity + point_id;
-    uint prev_generation = uint(visited_flags.data[index]);
-    return prev_generation == VISITED_GENERATION;
+#define VISITED_HASHTABLE_SIZE (4 * CANDIDATES_HEAP_CAPACITY)
+
+struct VisitedRecord {
+    POINT_ID id;
+    uint generation;
+};
+uint generation_counter = 0;
+
+shared VisitedRecord visited_hashtable[VISITED_HASHTABLE_SIZE];
+
+void visited_flags_init() {
+    generation_counter = 0;
+    for (uint i = SUBGROUP_INVOCATION_ID; i < VISITED_HASHTABLE_SIZE; i += SUBGROUP_SIZE) {
+        visited_hashtable[i] = VisitedRecord(UINT_MAX, 0);
+    }
+    groupMemoryBarrier();
 }
 
-void mark_visited(POINT_ID point_id) {
-    uint subgroup_index = SUBGROUP_ID;
-    uint index = subgroup_index * visited_flags_params.capacity + point_id;
-    visited_flags.data[index] = uint8_t(VISITED_GENERATION);
+bool is_visited(POINT_ID point_id) {
+    uint hash = point_id % VISITED_HASHTABLE_SIZE;
+    VisitedRecord record = visited_hashtable[hash + SUBGROUP_INVOCATION_ID];
+    if (subgroupAny(record.id == point_id)) {
+        return true;
+    }
+
+    if (nearest_heap_contains(point_id)) {
+        return true;
+    }
+
+    generation_counter++;
+    uint subgroup_smaller = subgroupMin(record.generation);
+    bool is_min_thread = record.generation == subgroup_smaller;
+    uvec4 subgroup_min_threads = subgroupBallot(is_min_thread);
+    uint subgroup_min_thread = subgroupBallotFindLSB(subgroup_min_threads);
+
+    if (SUBGROUP_INVOCATION_ID == subgroup_min_thread) {
+        visited_hashtable[hash + SUBGROUP_INVOCATION_ID] = VisitedRecord(point_id, generation_counter);
+    }
+    // don't need to synchronize here, we do flush later
+    return false;
 }
 
 #endif
