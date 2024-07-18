@@ -22,17 +22,6 @@ void nearest_heap_init() {
     groupMemoryBarrier();
 }
 
-bool nearest_heap_contains(POINT_ID point_id) {
-    bool contains = false;
-    for (uint i = SUBGROUP_INVOCATION_ID; i < nearest_count; i += SUBGROUP_SIZE) {
-        if (nearest[i].id == point_id) {
-            contains = true;
-        }
-    }
-    return subgroupAny(contains);
-
-}
-
 // Push the nearest `ScoredPoint`. Returns true if the `ScoredPoint` was added.
 bool push_nearest(ScoredPoint scored_point) {
     uint ef = NEAREST_HEAP_EF;
