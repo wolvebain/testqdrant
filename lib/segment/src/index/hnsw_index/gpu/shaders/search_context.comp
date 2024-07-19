@@ -13,6 +13,7 @@ void process_candidate(ScoredPoint scored_point) {
     bool was_added = push_nearest(scored_point);
     if (was_added && not_presented) {
         push_candidate(scored_point);
+        subgroupMemoryBarrierShared();
     }
 }
 
@@ -42,7 +43,7 @@ void process_candidate(POINT_ID candidate_id) {
     }
 
     // flush all changed visited flags
-    groupMemoryBarrier();
+    subgroupMemoryBarrierBuffer();
 }
 
 uint search(POINT_ID point_id, ScoredPoint entry) {
@@ -52,6 +53,7 @@ uint search(POINT_ID point_id, ScoredPoint entry) {
     }
     push_nearest(entry);
     push_candidate(entry);
+    groupMemoryBarrier();
     
     while (candidates_count > 0) {
         ScoredPoint candidate = pop_candidate();

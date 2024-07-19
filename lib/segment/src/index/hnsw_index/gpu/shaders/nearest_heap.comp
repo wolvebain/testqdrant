@@ -19,7 +19,6 @@ void nearest_heap_init() {
         uint buffer_index = i;
         nearest[buffer_index] = ScoredPoint(UINT_MAX, negative_infinity);
     }
-    groupMemoryBarrier();
 }
 
 // Push the nearest `ScoredPoint`. Returns true if the `ScoredPoint` was added.
@@ -31,8 +30,6 @@ bool push_nearest(ScoredPoint scored_point) {
                 uint buffer_index = nearest_smaller_index;
                 nearest[buffer_index] = scored_point;
             }
-            groupMemoryBarrier(); // TODO: is this necessary? We can write and read in the same shader invocation
-
             nearest_smaller_index = 0;
             nearest_smaller.score = positive_infinity;
             for (uint i = SUBGROUP_INVOCATION_ID; i < ef; i += SUBGROUP_SIZE) {
@@ -61,8 +58,6 @@ bool push_nearest(ScoredPoint scored_point) {
             uint buffer_index = nearest_count;
             nearest[buffer_index] = scored_point;
         }
-        groupMemoryBarrier(); // TODO: is this necessary? We can write and read in the same shader invocation
-
         if (scored_point.score < nearest_smaller.score) {
             nearest_smaller = scored_point;
             nearest_smaller_index = nearest_count;
@@ -131,7 +126,7 @@ void sort_nearest_bubble() {
             float shuffled_scored_point_score = subgroupShuffle(scored_point.score, permut);
             uint shuffled_scored_point_id = subgroupShuffle(scored_point.id, permut);
             nearest[i] = ScoredPoint(shuffled_scored_point_id, shuffled_scored_point_score);
-            groupMemoryBarrier();
+            subgroupMemoryBarrierShared();
         }
 
         if (NEAREST_HEAP_CAPACITY > SUBGROUP_SIZE) {
@@ -146,7 +141,7 @@ void sort_nearest_bubble() {
                 float shuffled_scored_point_score = subgroupShuffle(scored_point.score, permut);
                 uint shuffled_scored_point_id = subgroupShuffle(scored_point.id, permut);
                 nearest[i] = ScoredPoint(shuffled_scored_point_id, shuffled_scored_point_score);
-                groupMemoryBarrier();
+                subgroupMemoryBarrierShared();
             }
         }
     }
@@ -185,13 +180,13 @@ void sort_nearest() {
         for (uint i = SUBGROUP_INVOCATION_ID; i < nearest_count; i += SUBGROUP_SIZE) {
             bitonic_cmp(i, i ^ (k - 1));
         }
-        groupMemoryBarrier();
+        subgroupMemoryBarrierShared();
 
         for (uint j = k >> 1; 0 < j; j >>= 1) {
             for (uint i = SUBGROUP_INVOCATION_ID; i < nearest_count; i += SUBGROUP_SIZE) {
                 bitonic_cmp(i, i ^ j);
             }
-            groupMemoryBarrier();
+            subgroupMemoryBarrierShared();
         }
     }
 }
@@ -204,7 +199,7 @@ void set_nearest(uint i, ScoredPoint scored_point) {
     if (subgroupElect()) {
         nearest[i] = scored_point;
     }
-    groupMemoryBarrier();
+    subgroupMemoryBarrierShared();
 }
 
 #endif

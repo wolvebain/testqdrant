@@ -46,7 +46,7 @@ void clear_patches() {
     for (uint i = SUBGROUP_INVOCATION_ID; i < all_patches_size; i += SUBGROUP_SIZE) {
         patches.data[patches_offset + i] = UINT_MAX;
     }
-    groupMemoryBarrier();
+    subgroupMemoryBarrierShared();
 }
 
 void main() {
@@ -85,7 +85,7 @@ void main() {
             patches.data[patches_offset + i + 2] = get_nearest(i).id;
         }
     }
-    groupMemoryBarrier();
+    subgroupMemoryBarrierShared();
 
     for (uint i = 0; i < count; i++) {
         uint other_id = patches.data[patches_offset + i + 2];

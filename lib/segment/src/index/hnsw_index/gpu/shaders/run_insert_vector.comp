@@ -77,7 +77,7 @@ void main() {
         LINKS_SET_SIZE(request.id, count);
     }
 
-    groupMemoryBarrier();
+    subgroupMemoryBarrier();
 
     uint generation = VISITED_GENERATION;
 

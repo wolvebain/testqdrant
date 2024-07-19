@@ -11,7 +11,6 @@ void candidates_heap_init() {
     for (uint i = SUBGROUP_INVOCATION_ID; i < CANDIDATES_HEAP_CAPACITY; i += SUBGROUP_SIZE) {
         candidates[i] = ScoredPoint(0, positive_infinity);
     }
-    groupMemoryBarrier();
 }
 
 ScoredPoint pop_candidate() {
@@ -41,7 +40,6 @@ ScoredPoint pop_candidate() {
     if (subgroupElect()) {
         candidates[max_index] = candidates[candidates_count];
     }
-    groupMemoryBarrier();
     return max_scored_point;
 }
 
@@ -71,7 +69,6 @@ bool push_candidate(ScoredPoint scored_point) {
         }
         candidates_count++;
     }
-    groupMemoryBarrier();
     return true;
 }
 
