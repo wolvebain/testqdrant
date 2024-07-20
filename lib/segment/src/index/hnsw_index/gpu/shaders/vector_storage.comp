@@ -112,7 +112,7 @@ void set_target(uint point_id) {
     }
 }
 
-float similarity(uint point_id) {
+float similarity_subgroup(uint point_id) {
     float result = 0.0;
     uint index = (point_id / STORAGES_COUNT) * (DIM / 4) + SUBGROUP_INVOCATION_ID;
     uint storage_index = point_id % STORAGES_COUNT;
@@ -132,12 +132,52 @@ float similarity(uint point_id) {
     }
 
 #ifdef VECTOR_STORAGE_ELEMENT_BINARY
-    float xor_product = subgroupAdd(result);
-    float zeros_count = float((DIM / 4) * 32) - xor_product;
-    return zeros_count - xor_product;
+    float zeros_count = float(((DIM / 4) * 32) / SUBGROUP_SIZE) - result;
+    return zeros_count - result;
 #else
-    return subgroupAdd(result);
+    return result;
 #endif
+}
+
+float similarity(uint point_id) {
+    float result = similarity_subgroup(point_id);
+    return subgroupAdd(result);
+}
+
+float bulk;
+uint bulk_shuffle = 0;
+const float NaN = 0.0 / 0.0;
+
+void bulk_similarity_init() {
+    bulk = 0.0;
+    if (SUBGROUP_INVOCATION_ID < SUBGROUP_SIZE / 2) {
+        bulk_shuffle = 2 * SUBGROUP_INVOCATION_ID + 1;
+    } else {
+        bulk_shuffle = 2 * (SUBGROUP_INVOCATION_ID - (SUBGROUP_SIZE / 2));
+    }
+}
+
+void bulk_similarity_clear() {
+    bulk = NaN;
+}
+
+float bulk_similarity(uint point_id) {
+    float a = similarity_subgroup(point_id);
+    float b = bulk;
+    if (SUBGROUP_INVOCATION_ID % 2 == 0) {
+        float t = a;
+        a = b;
+        b = t;
+    }
+    a = b + subgroupShuffleXor(a, 1);
+    bulk = subgroupShuffle(a, bulk_shuffle);
+    return subgroupBroadcast(bulk, 1);
+}
+
+float bulk_finish() {
+    bulk += subgroupShuffleXor(bulk, 1);
+    bulk = subgroupShuffle(bulk, bulk_shuffle);
+    return subgroupBroadcast(bulk, 1);
 }
 
 #endif

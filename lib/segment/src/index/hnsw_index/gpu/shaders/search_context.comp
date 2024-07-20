@@ -75,23 +75,38 @@ ScoredPoint greedy_search(POINT_ID point_id, ScoredPoint entry) {
 
     uint subgroup_link = 0;
     uint invocation = SUBGROUP_INVOCATION_ID;
+    uint links_history[SUBGROUP_SIZE];
 
     while (changed) {
         changed = false;
 
         uint current = result.id;
         uint links_count = LINKS_COUNT(current);
-        for (uint i = 0; i < links_count; i++) {
-            if (i % SUBGROUP_SIZE == 0 && i + invocation < links_count) {
-                subgroup_link = GET_LINK(current, i + invocation);
+        for (uint subgroup_i = 0; subgroup_i < links_count; subgroup_i += SUBGROUP_SIZE) {
+            if (subgroup_i + invocation < links_count) {
+                subgroup_link = GET_LINK(current, subgroup_i + invocation);
             }
-            uint link = subgroupShuffle(subgroup_link, i % SUBGROUP_SIZE);
 
-            float score = similarity(link);
-            if (score > result.score) {
-                changed = true;
-                result = ScoredPoint(link, score);
+            uint i = 0;
+            bulk_similarity_clear();
+            uint cnt = min(SUBGROUP_SIZE, links_count - subgroup_i);
+            for (; i < cnt; i++) {
+                uint link = subgroupShuffle(subgroup_link, i);
+                links_history[i] = link;
+                float score = bulk_similarity(link);
+                if (score > result.score) {
+                    changed = true;
+                    result = ScoredPoint(links_history[i - 4], score);
+                }
             }
+            for (uint j = 0; j < 4; j++, i++) {
+                float score = bulk_finish();
+                if (score > result.score) {
+                    changed = true;
+                    result = ScoredPoint(links_history[i - 4], score);
+                }
+            }
+
         }
     }
     return result;
@@ -129,6 +144,7 @@ uint run_heuristic() {
 }
 
 void search_context_init() {
+    bulk_similarity_init();
     nearest_heap_init();
     candidates_heap_init();
 }
