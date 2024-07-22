@@ -279,6 +279,9 @@ pub enum Query {
     /// Return points that live in positive areas.
     Context(ContextQuery),
 
+    /// Return points that are the farthest apart from this vector. Shorthand for recommend best_score with only one negative input
+    Farthest(FarthestQuery),
+
     /// Order the points by a payload field.
     OrderBy(OrderByQuery),
 
@@ -308,6 +311,12 @@ pub struct DiscoverQuery {
 #[serde(rename_all = "snake_case")]
 pub struct ContextQuery {
     pub context: ContextInput,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct FarthestQuery {
+    pub furthest: VectorInput,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]

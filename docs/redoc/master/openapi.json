@@ -11987,6 +11987,9 @@
             "$ref": "#/components/schemas/ContextQuery"
           },
           {
+            "$ref": "#/components/schemas/FarthestQuery"
+          },
+          {
             "$ref": "#/components/schemas/OrderByQuery"
           },
           {
@@ -12129,6 +12132,17 @@
             "nullable": true
           }
         ]
+      },
+      "FarthestQuery": {
+        "type": "object",
+        "required": [
+          "furthest"
+        ],
+        "properties": {
+          "furthest": {
+            "$ref": "#/components/schemas/VectorInput"
+          }
+        }
       },
       "OrderByQuery": {
         "type": "object",
