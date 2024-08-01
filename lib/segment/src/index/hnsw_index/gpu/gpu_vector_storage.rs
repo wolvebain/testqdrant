@@ -468,11 +468,11 @@ mod tests {
     }
 
     fn test_gpu_vector_storage_scoring_impl(
-        dim: usize,
         element_type: TestElementType,
         force_half_precision: bool,
     ) -> GpuVectorStorageElementType {
         let num_vectors = 2048;
+        let dim = 128;
         let test_point_id = 0usize;
 
         let mut rnd = StdRng::seed_from_u64(42);
@@ -575,25 +575,25 @@ mod tests {
 
     #[test]
     fn test_gpu_vector_storage_scoring() {
-        let element = test_gpu_vector_storage_scoring_impl(512, TestElementType::Float32, false);
+        let element = test_gpu_vector_storage_scoring_impl(TestElementType::Float32, false);
         assert_eq!(element, GpuVectorStorageElementType::Float32);
     }
 
     #[test]
     fn test_gpu_vector_storage_scoring_f16() {
-        let element = test_gpu_vector_storage_scoring_impl(128, TestElementType::Float16, false);
+        let element = test_gpu_vector_storage_scoring_impl(TestElementType::Float16, false);
         assert_eq!(element, GpuVectorStorageElementType::Float16);
     }
 
     #[test]
     fn test_gpu_vector_storage_scoring_u8() {
-        let element = test_gpu_vector_storage_scoring_impl(512, TestElementType::Uint8, false);
+        let element = test_gpu_vector_storage_scoring_impl(TestElementType::Uint8, false);
         assert_eq!(element, GpuVectorStorageElementType::Uint8);
     }
 
     #[test]
     fn test_gpu_vector_storage_force_half_precision() {
-        let element = test_gpu_vector_storage_scoring_impl(128, TestElementType::Float32, true);
+        let element = test_gpu_vector_storage_scoring_impl(TestElementType::Float32, true);
         assert_eq!(element, GpuVectorStorageElementType::Float16);
     }
 
