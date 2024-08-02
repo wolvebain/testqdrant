@@ -1,19 +1,21 @@
 use std::cmp::{max, min};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 
 use common::types::PointOffsetType;
 use itertools::Itertools;
+use mutable_geo_index::DynamicGeoMapIndex;
 use parking_lot::RwLock;
 use rocksdb::DB;
 use serde_json::Value;
 
 use self::immutable_geo_index::ImmutableGeoMapIndex;
+use self::mmap_geo_index::MmapGeoMapIndex;
 use self::mutable_geo_index::MutableGeoMapIndex;
+use super::geo_hash::GeoHashRef;
 use super::FieldIndexBuilderTrait;
 use crate::common::operation_error::{OperationError, OperationResult};
-use crate::common::rocksdb_buffered_delete_wrapper::DatabaseColumnScheduledDeleteWrapper;
 use crate::common::Flusher;
 use crate::index::field_index::geo_hash::{
     circle_hashes, common_hash_prefix, geo_hash_to_box, polygon_hashes, polygon_hashes_estimation,
@@ -27,6 +29,7 @@ use crate::telemetry::PayloadIndexTelemetry;
 use crate::types::{FieldCondition, GeoPoint, PayloadKeyType};
 
 pub mod immutable_geo_index;
+pub mod mmap_geo_index;
 pub mod mutable_geo_index;
 
 /// Max number of sub-regions computed for an input geo query
@@ -36,6 +39,7 @@ const GEO_QUERY_MAX_REGION: usize = 12;
 pub enum GeoMapIndex {
     Mutable(MutableGeoMapIndex),
     Immutable(ImmutableGeoMapIndex),
+    Mmap(Box<MmapGeoMapIndex>),
 }
 
 impl GeoMapIndex {
@@ -48,28 +52,34 @@ impl GeoMapIndex {
         }
     }
 
+    pub fn new_mmap(path: &Path) -> OperationResult<Self> {
+        Ok(GeoMapIndex::Mmap(Box::new(MmapGeoMapIndex::load(path)?)))
+    }
+
     pub fn builder(db: Arc<RwLock<DB>>, field: &str) -> GeoMapIndexBuilder {
         GeoMapIndexBuilder(Self::new(db, field, true))
     }
 
-    fn db_wrapper(&self) -> &DatabaseColumnScheduledDeleteWrapper {
-        match self {
-            GeoMapIndex::Mutable(index) => index.db_wrapper(),
-            GeoMapIndex::Immutable(index) => index.db_wrapper(),
+    pub fn mmap_builder(path: &Path) -> GeoMapIndexMmapBuilder {
+        GeoMapIndexMmapBuilder {
+            path: path.to_owned(),
+            dynamic_index: DynamicGeoMapIndex::new(),
         }
     }
 
     fn points_count(&self) -> usize {
         match self {
-            GeoMapIndex::Mutable(index) => index.points_count,
-            GeoMapIndex::Immutable(index) => index.points_count,
+            GeoMapIndex::Mutable(index) => index.get_points_count(),
+            GeoMapIndex::Immutable(index) => index.get_points_count(),
+            GeoMapIndex::Mmap(index) => index.get_indexed_points(),
         }
     }
 
     fn points_values_count(&self) -> usize {
         match self {
-            GeoMapIndex::Mutable(index) => index.points_values_count,
-            GeoMapIndex::Immutable(index) => index.points_values_count,
+            GeoMapIndex::Mutable(index) => index.get_points_values_count(),
+            GeoMapIndex::Immutable(index) => index.get_points_values_count(),
+            GeoMapIndex::Mmap(index) => index.get_points_values_count(),
         }
     }
 
@@ -80,8 +90,9 @@ impl GeoMapIndex {
     /// Zero if the index is empty.
     fn max_values_per_point(&self) -> usize {
         match self {
-            GeoMapIndex::Mutable(index) => index.max_values_per_point,
-            GeoMapIndex::Immutable(index) => index.max_values_per_point,
+            GeoMapIndex::Mutable(index) => index.get_max_values_per_point(),
+            GeoMapIndex::Immutable(index) => index.get_max_values_per_point(),
+            GeoMapIndex::Mmap(index) => index.get_max_values_per_point(),
         }
     }
 
@@ -89,6 +100,7 @@ impl GeoMapIndex {
         match self {
             GeoMapIndex::Mutable(index) => index.get_points_of_hash(hash),
             GeoMapIndex::Immutable(index) => index.get_points_of_hash(hash),
+            GeoMapIndex::Mmap(index) => index.get_points_of_hash(hash),
         }
     }
 
@@ -96,6 +108,7 @@ impl GeoMapIndex {
         match self {
             GeoMapIndex::Mutable(index) => index.get_values_of_hash(hash),
             GeoMapIndex::Immutable(index) => index.get_values_of_hash(hash),
+            GeoMapIndex::Mmap(index) => index.get_values_of_hash(hash),
         }
     }
 
@@ -145,7 +158,11 @@ impl GeoMapIndex {
     }
 
     pub fn flusher(&self) -> Flusher {
-        self.db_wrapper().flusher()
+        match self {
+            GeoMapIndex::Mutable(index) => index.db_wrapper().flusher(),
+            GeoMapIndex::Immutable(index) => index.db_wrapper().flusher(),
+            GeoMapIndex::Mmap(index) => index.flusher(),
+        }
     }
 
     pub fn check_values_any(
@@ -156,6 +173,7 @@ impl GeoMapIndex {
         match self {
             GeoMapIndex::Mutable(index) => index.check_values_any(idx, check_fn),
             GeoMapIndex::Immutable(index) => index.check_values_any(idx, check_fn),
+            GeoMapIndex::Mmap(index) => index.check_values_any(idx, check_fn),
         }
     }
 
@@ -163,6 +181,7 @@ impl GeoMapIndex {
         match self {
             GeoMapIndex::Mutable(index) => index.values_count(idx),
             GeoMapIndex::Immutable(index) => index.values_count(idx),
+            GeoMapIndex::Mmap(index) => index.values_count(idx),
         }
     }
 
@@ -244,6 +263,16 @@ impl GeoMapIndex {
                     })
                     .unique(),
             ),
+            GeoMapIndex::Mmap(index) => Box::new(
+                values
+                    .into_iter()
+                    .flat_map(|top_geo_hash| {
+                        index
+                            .get_stored_sub_regions(&top_geo_hash)
+                            .flat_map(|(_geohash, points)| points)
+                    })
+                    .unique(),
+            ),
         }
     }
 
@@ -251,15 +280,21 @@ impl GeoMapIndex {
     fn get_large_hashes(
         &self,
         threshold: usize,
-    ) -> Box<dyn Iterator<Item = (&GeoHash, usize)> + '_> {
+    ) -> Box<dyn Iterator<Item = (GeoHashRef, usize)> + '_> {
         let filter_condition =
-            |(hash, size): &(&GeoHash, usize)| *size > threshold && !hash.is_empty();
+            |(hash, size): &(GeoHashRef, usize)| *size > threshold && !hash.is_empty();
         let mut large_regions = match self {
             GeoMapIndex::Mutable(index) => index
                 .get_points_per_hash()
+                .map(|(hash, size)| (hash.as_str(), size))
                 .filter(filter_condition)
                 .collect_vec(),
             GeoMapIndex::Immutable(index) => index
+                .get_points_per_hash()
+                .map(|(hash, size)| (hash.as_str(), size))
+                .filter(filter_condition)
+                .collect_vec(),
+            GeoMapIndex::Mmap(index) => index
                 .get_points_per_hash()
                 .filter(filter_condition)
                 .collect_vec(),
@@ -273,8 +308,8 @@ impl GeoMapIndex {
         let mut current_region = GeoHash::default();
 
         for (region, size) in large_regions {
-            if !current_region.starts_with(region.as_str()) {
-                current_region = region.clone();
+            if !current_region.starts_with(region) {
+                current_region = GeoHash::new_inline(region);
                 edge_region.push((region, size));
             }
         }
@@ -293,7 +328,11 @@ impl FieldIndexBuilderTrait for GeoMapIndexBuilder {
     type FieldIndexType = GeoMapIndex;
 
     fn init(&mut self) -> OperationResult<()> {
-        self.0.db_wrapper().recreate_column_family()
+        match &self.0 {
+            GeoMapIndex::Mutable(index) => index.db_wrapper().recreate_column_family(),
+            GeoMapIndex::Immutable(_) => unreachable!(),
+            GeoMapIndex::Mmap(_) => unreachable!(),
+        }
     }
 
     fn add_point(&mut self, id: PointOffsetType, payload: &[&Value]) -> OperationResult<()> {
@@ -305,6 +344,35 @@ impl FieldIndexBuilderTrait for GeoMapIndexBuilder {
     }
 }
 
+pub struct GeoMapIndexMmapBuilder {
+    path: PathBuf,
+    dynamic_index: DynamicGeoMapIndex,
+}
+
+impl FieldIndexBuilderTrait for GeoMapIndexMmapBuilder {
+    type FieldIndexType = GeoMapIndex;
+
+    fn init(&mut self) -> OperationResult<()> {
+        Ok(())
+    }
+
+    fn add_point(&mut self, id: PointOffsetType, payload: &[&Value]) -> OperationResult<()> {
+        let mut flatten_values: Vec<_> = vec![];
+        for value in payload.iter() {
+            let payload_values = <GeoMapIndex as ValueIndexer>::get_values(value);
+            flatten_values.extend(payload_values);
+        }
+        self.dynamic_index.add_many_geo_points(id, &flatten_values)
+    }
+
+    fn finalize(self) -> OperationResult<Self::FieldIndexType> {
+        Ok(GeoMapIndex::Mmap(Box::new(MmapGeoMapIndex::new(
+            self.dynamic_index,
+            &self.path,
+        )?)))
+    }
+}
+
 impl ValueIndexer for GeoMapIndex {
     type ValueType = GeoPoint;
 
@@ -313,6 +381,9 @@ impl ValueIndexer for GeoMapIndex {
             GeoMapIndex::Mutable(index) => index.add_many_geo_points(id, &values),
             GeoMapIndex::Immutable(_) => Err(OperationError::service_error(
                 "Can't add values to immutable geo index",
+            )),
+            GeoMapIndex::Mmap(_) => Err(OperationError::service_error(
+                "Can't add values to mmap geo index",
             )),
         }
     }
@@ -336,6 +407,10 @@ impl ValueIndexer for GeoMapIndex {
         match self {
             GeoMapIndex::Mutable(index) => index.remove_point(id),
             GeoMapIndex::Immutable(index) => index.remove_point(id),
+            GeoMapIndex::Mmap(index) => {
+                index.remove_point(id);
+                Ok(())
+            }
         }
     }
 }
@@ -349,11 +424,17 @@ impl PayloadFieldIndex for GeoMapIndex {
         match self {
             GeoMapIndex::Mutable(index) => index.load(),
             GeoMapIndex::Immutable(index) => index.load(),
+            // Mmap index is always loaded
+            GeoMapIndex::Mmap(_) => Ok(true),
         }
     }
 
     fn clear(self) -> OperationResult<()> {
-        self.db_wrapper().remove_column_family()
+        match self {
+            GeoMapIndex::Mutable(index) => index.db_wrapper().remove_column_family(),
+            GeoMapIndex::Immutable(index) => index.db_wrapper().remove_column_family(),
+            GeoMapIndex::Mmap(index) => index.clear(),
+        }
     }
 
     fn flusher(&self) -> Flusher {
