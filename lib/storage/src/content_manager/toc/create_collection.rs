@@ -44,6 +44,7 @@ impl TableOfContent {
             init_from,
             quantization_config,
             sparse_vectors,
+            comment,
         } = operation;
 
         self.collections
@@ -186,6 +187,7 @@ impl TableOfContent {
             optimizer_config: optimizers_config,
             hnsw_config,
             quantization_config,
+            comment,
         };
         let collection = Collection::new(
             collection_name.to_string(),

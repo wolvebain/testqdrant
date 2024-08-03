@@ -60,6 +60,7 @@ impl TryFrom<api::grpc::qdrant::CreateCollection> for CollectionMetaOperations {
                     .sharding_method
                     .map(sharding_method_from_proto)
                     .transpose()?,
+                comment: value.comment,
             },
         )))
     }
@@ -88,6 +89,7 @@ impl TryFrom<api::grpc::qdrant::UpdateCollection> for CollectionMetaOperations {
                     .sparse_vectors_config
                     .map(TryInto::try_into)
                     .transpose()?,
+                comment: value.comment,
             },
         )))
     }

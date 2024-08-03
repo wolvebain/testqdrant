@@ -1344,6 +1344,7 @@ mod tests {
                             init_from: None,
                             quantization_config: None,
                             sharding_method: None,
+                            comment: None,
                         },
                     )),
                     Access::full("For test"),

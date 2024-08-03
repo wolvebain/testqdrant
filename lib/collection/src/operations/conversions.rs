@@ -428,6 +428,7 @@ impl From<CollectionInfo> for api::grpc::qdrant::CollectionInfo {
                     wal_segments_ahead: Some(config.wal_config.wal_segments_ahead as u64),
                 }),
                 quantization_config: config.quantization_config.map(|x| x.into()),
+                comment: config.comment,
             }),
             payload_schema: payload_schema
                 .into_iter()
@@ -760,6 +761,7 @@ impl TryFrom<api::grpc::qdrant::CollectionConfig> for CollectionConfig {
                     None
                 }
             },
+            comment: config.comment,
         })
     }
 }

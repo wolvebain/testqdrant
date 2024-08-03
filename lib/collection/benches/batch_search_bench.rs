@@ -81,6 +81,7 @@ fn batch_search_bench(c: &mut Criterion) {
         wal_config,
         hnsw_config: Default::default(),
         quantization_config: Default::default(),
+        comment: None,
     };
 
     let optimizers_config = collection_config.optimizer_config.clone();

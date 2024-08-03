@@ -52,6 +52,7 @@ async fn _test_snapshot_collection(node_type: NodeType) {
         wal_config,
         hnsw_config: Default::default(),
         quantization_config: Default::default(),
+        comment: None,
     };
 
     let snapshots_path = Builder::new().prefix("test_snapshots").tempdir().unwrap();
