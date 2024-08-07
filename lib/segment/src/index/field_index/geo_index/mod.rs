@@ -60,6 +60,15 @@ impl GeoMapIndex {
         GeoMapIndexBuilder(Self::new(db, field, true))
     }
 
+    #[cfg(test)]
+    pub fn builder_immutable(db: Arc<RwLock<DB>>, field: &str) -> GeoMapImmutableIndexBuilder {
+        GeoMapImmutableIndexBuilder {
+            index: Self::new(db.clone(), field, false),
+            field: field.to_owned(),
+            db,
+        }
+    }
+
     pub fn mmap_builder(path: &Path) -> GeoMapIndexMmapBuilder {
         GeoMapIndexMmapBuilder {
             path: path.to_owned(),
@@ -344,6 +353,38 @@ impl FieldIndexBuilderTrait for GeoMapIndexBuilder {
     }
 }
 
+#[cfg(test)]
+pub struct GeoMapImmutableIndexBuilder {
+    index: GeoMapIndex,
+    field: String,
+    db: Arc<RwLock<DB>>,
+}
+
+#[cfg(test)]
+impl FieldIndexBuilderTrait for GeoMapImmutableIndexBuilder {
+    type FieldIndexType = GeoMapIndex;
+
+    fn init(&mut self) -> OperationResult<()> {
+        match &self.index {
+            GeoMapIndex::Mutable(index) => index.db_wrapper().recreate_column_family(),
+            GeoMapIndex::Immutable(_) => unreachable!(),
+            GeoMapIndex::Mmap(_) => unreachable!(),
+        }
+    }
+
+    fn add_point(&mut self, id: PointOffsetType, payload: &[&Value]) -> OperationResult<()> {
+        self.index.add_point(id, payload)
+    }
+
+    fn finalize(self) -> OperationResult<Self::FieldIndexType> {
+        self.index.flusher()()?;
+        drop(self.index);
+        let mut immutable_index = GeoMapIndex::new(self.db, &self.field, false);
+        immutable_index.load()?;
+        Ok(immutable_index)
+    }
+}
+
 pub struct GeoMapIndexMmapBuilder {
     path: PathBuf,
     dynamic_index: DynamicGeoMapIndex,
@@ -563,7 +604,7 @@ mod tests {
     use rand::SeedableRng;
     use rstest::rstest;
     use serde_json::json;
-    use tempfile::Builder;
+    use tempfile::{Builder, TempDir};
 
     use super::*;
     use crate::common::rocksdb_wrapper::open_db_with_existing_cf;
@@ -571,6 +612,37 @@ mod tests {
     use crate::json_path::JsonPath;
     use crate::types::test_utils::build_polygon;
     use crate::types::{GeoBoundingBox, GeoLineString, GeoPolygon, GeoRadius};
+
+    #[derive(Clone, Copy)]
+    enum IndexType {
+        Mutable,
+        Immutable,
+        Mmap,
+    }
+
+    enum IndexBuilder {
+        Mutable(GeoMapIndexBuilder),
+        Immutable(GeoMapImmutableIndexBuilder),
+        Mmap(GeoMapIndexMmapBuilder),
+    }
+
+    impl IndexBuilder {
+        fn add_point(&mut self, id: PointOffsetType, payload: &[&Value]) -> OperationResult<()> {
+            match self {
+                IndexBuilder::Mutable(builder) => builder.add_point(id, payload),
+                IndexBuilder::Immutable(builder) => builder.add_point(id, payload),
+                IndexBuilder::Mmap(builder) => builder.add_point(id, payload),
+            }
+        }
+
+        fn finalize(self) -> OperationResult<GeoMapIndex> {
+            match self {
+                IndexBuilder::Mutable(builder) => builder.finalize(),
+                IndexBuilder::Immutable(builder) => builder.finalize(),
+                IndexBuilder::Mmap(builder) => builder.finalize(),
+            }
+        }
+    }
 
     const NYC: GeoPoint = GeoPoint {
         lat: 40.75798,
@@ -611,42 +683,46 @@ mod tests {
         FieldCondition::new_geo_bounding_box(JsonPath::new(key), geo_bounding_box)
     }
 
+    fn create_builder(index_type: IndexType) -> (IndexBuilder, TempDir, Arc<RwLock<DB>>) {
+        let temp_dir = Builder::new().prefix("test_dir").tempdir().unwrap();
+        let db = open_db_with_existing_cf(&temp_dir.path().join("test_db")).unwrap();
+        let mut builder = match index_type {
+            IndexType::Mutable => {
+                IndexBuilder::Mutable(GeoMapIndex::builder(db.clone(), FIELD_NAME))
+            }
+            IndexType::Immutable => {
+                IndexBuilder::Immutable(GeoMapIndex::builder_immutable(db.clone(), FIELD_NAME))
+            }
+            IndexType::Mmap => IndexBuilder::Mmap(GeoMapIndex::mmap_builder(temp_dir.path())),
+        };
+        match &mut builder {
+            IndexBuilder::Mutable(builder) => builder.init().unwrap(),
+            IndexBuilder::Immutable(builder) => builder.init().unwrap(),
+            IndexBuilder::Mmap(builder) => builder.init().unwrap(),
+        }
+        (builder, temp_dir, db)
+    }
+
     fn build_random_index(
         num_points: usize,
         num_geo_values: usize,
-        is_appendable: bool,
-    ) -> GeoMapIndex {
-        let temp_dir = Builder::new().prefix("test_dir").tempdir().unwrap();
-        let db = open_db_with_existing_cf(&temp_dir.path().join("test_db")).unwrap();
-
+        index_type: IndexType,
+    ) -> (GeoMapIndex, TempDir, Arc<RwLock<DB>>) {
         let mut rnd = StdRng::seed_from_u64(42);
-        let mut index = GeoMapIndex::builder(db.clone(), FIELD_NAME)
-            .make_empty()
-            .unwrap();
+        let (mut builder, temp_dir, db) = create_builder(index_type);
 
         for idx in 0..num_points {
             let geo_points = random_geo_payload(&mut rnd, num_geo_values..=num_geo_values);
             let array_payload = Value::Array(geo_points);
-            index
+            builder
                 .add_point(idx as PointOffsetType, &[&array_payload])
                 .unwrap();
         }
+
+        let index = builder.finalize().unwrap();
         assert_eq!(index.points_count(), num_points);
         assert_eq!(index.points_values_count(), num_points * num_geo_values);
-
-        if !is_appendable {
-            index.flusher()().unwrap();
-            let mut immutable_index = GeoMapIndex::new(db, FIELD_NAME, false);
-            assert!(immutable_index.load().unwrap());
-            assert_eq!(immutable_index.points_count(), num_points);
-            assert_eq!(
-                immutable_index.points_values_count(),
-                num_points * num_geo_values
-            );
-            immutable_index
-        } else {
-            index
-        }
+        (index, temp_dir, db)
     }
 
     const EARTH_RADIUS_METERS: f64 = 6371.0 * 1000.;
@@ -691,15 +767,16 @@ mod tests {
     }
 
     #[rstest]
-    #[case(true)]
-    #[case(false)]
-    fn test_polygon_with_exclusion(#[case] is_appendable: bool) {
+    #[case(IndexType::Mutable)]
+    #[case(IndexType::Immutable)]
+    #[case(IndexType::Mmap)]
+    fn test_polygon_with_exclusion(#[case] index_type: IndexType) {
         fn check_cardinality_match(
             hashes: Vec<GeoHash>,
             field_condition: FieldCondition,
-            is_appendable: bool,
+            index_type: IndexType,
         ) {
-            let field_index = build_random_index(500, 20, is_appendable);
+            let (field_index, _, _) = build_random_index(500, 20, index_type);
             let exact_points_for_hashes = field_index.get_iterator(hashes).collect_vec();
             let real_cardinality = exact_points_for_hashes.len();
 
@@ -825,20 +902,21 @@ mod tests {
         check_cardinality_match(
             polygon_hashes(&europe_no_berlin, GEO_QUERY_MAX_REGION).unwrap(),
             condition_for_geo_polygon("test", europe_no_berlin.clone()),
-            is_appendable,
+            index_type,
         );
     }
 
     #[rstest]
-    #[case(true)]
-    #[case(false)]
-    fn match_cardinality(#[case] is_appendable: bool) {
+    #[case(IndexType::Mutable)]
+    #[case(IndexType::Immutable)]
+    #[case(IndexType::Mmap)]
+    fn match_cardinality(#[case] index_type: IndexType) {
         fn check_cardinality_match(
             hashes: Vec<GeoHash>,
             field_condition: FieldCondition,
-            is_appendable: bool,
+            index_type: IndexType,
         ) {
-            let field_index = build_random_index(500, 20, is_appendable);
+            let (field_index, _, _) = build_random_index(500, 20, index_type);
             let exact_points_for_hashes = field_index.get_iterator(hashes).collect_vec();
             let real_cardinality = exact_points_for_hashes.len();
 
@@ -865,7 +943,7 @@ mod tests {
         check_cardinality_match(
             nyc_hashes,
             condition_for_geo_radius("test", geo_radius.clone()),
-            is_appendable,
+            index_type,
         );
 
         // geo_polygon cardinality check
@@ -874,22 +952,23 @@ mod tests {
         check_cardinality_match(
             polygon_hashes,
             condition_for_geo_polygon("test", geo_polygon),
-            is_appendable,
+            index_type,
         );
     }
 
     #[rstest]
-    #[case(true)]
-    #[case(false)]
-    fn geo_indexed_filtering(#[case] is_appendable: bool) {
+    #[case(IndexType::Mutable)]
+    #[case(IndexType::Immutable)]
+    #[case(IndexType::Mmap)]
+    fn geo_indexed_filtering(#[case] index_type: IndexType) {
         fn check_geo_indexed_filtering<F>(
             field_condition: FieldCondition,
             check_fn: F,
-            is_appendable: bool,
+            index_type: IndexType,
         ) where
             F: Fn(&GeoPoint) -> bool + Clone,
         {
-            let field_index = build_random_index(1000, 5, is_appendable);
+            let (field_index, _, _) = build_random_index(1000, 5, index_type);
 
             let mut matched_points = (0..field_index.count_indexed_points() as PointOffsetType)
                 .filter_map(|idx| {
@@ -920,7 +999,7 @@ mod tests {
         check_geo_indexed_filtering(
             condition_for_geo_radius("test", geo_radius.clone()),
             |geo_point| geo_radius.check_point(geo_point),
-            is_appendable,
+            index_type,
         );
 
         let geo_polygon: GeoPolygon = build_polygon(vec![
@@ -933,15 +1012,16 @@ mod tests {
         check_geo_indexed_filtering(
             condition_for_geo_polygon("test", geo_polygon.clone()),
             |geo_point| geo_polygon.convert().check_point(geo_point),
-            is_appendable,
+            index_type,
         );
     }
 
     #[rstest]
-    #[case(true)]
-    #[case(false)]
-    fn test_payload_blocks(#[case] is_appendable: bool) {
-        let field_index = build_random_index(1000, 5, is_appendable);
+    #[case(IndexType::Mutable)]
+    #[case(IndexType::Immutable)]
+    #[case(IndexType::Mmap)]
+    fn test_payload_blocks(#[case] index_type: IndexType) {
+        let (field_index, _, _) = build_random_index(1000, 5, index_type);
         let top_level_points = field_index.get_points_of_hash(&Default::default());
         assert_eq!(top_level_points, 1_000);
         let block_hashes = field_index.get_large_hashes(100).collect_vec();
@@ -961,12 +1041,12 @@ mod tests {
         });
     }
 
-    #[test]
-    fn match_cardinality_point_with_multi_far_geo_payload() {
-        let temp_dir = Builder::new().prefix("test_dir").tempdir().unwrap();
-        let db = open_db_with_existing_cf(&temp_dir.path().join("test_db")).unwrap();
-
-        let mut index = GeoMapIndex::builder(db, FIELD_NAME).make_empty().unwrap();
+    #[rstest]
+    #[case(IndexType::Mutable)]
+    #[case(IndexType::Immutable)]
+    #[case(IndexType::Mmap)]
+    fn match_cardinality_point_with_multi_far_geo_payload(#[case] index_type: IndexType) {
+        let (mut builder, _, _) = create_builder(index_type);
 
         let r_meters = 100.0;
         let geo_values = json!([
@@ -979,7 +1059,8 @@ mod tests {
                 "lat": NYC.lat
             }
         ]);
-        index.add_point(1, &[&geo_values]).unwrap();
+        builder.add_point(1, &[&geo_values]).unwrap();
+        let index = builder.finalize().unwrap();
 
         // around NYC
         let nyc_geo_radius = GeoRadius {
@@ -1043,13 +1124,12 @@ mod tests {
         assert_eq!(card.exp, 0);
     }
 
-    #[test]
-    fn match_cardinality_point_with_multi_close_geo_payload() {
-        let temp_dir = Builder::new().prefix("test_dir").tempdir().unwrap();
-        let db = open_db_with_existing_cf(&temp_dir.path().join("test_db")).unwrap();
-
-        let mut index = GeoMapIndex::builder(db, FIELD_NAME).make_empty().unwrap();
-
+    #[rstest]
+    #[case(IndexType::Mutable)]
+    #[case(IndexType::Immutable)]
+    #[case(IndexType::Mmap)]
+    fn match_cardinality_point_with_multi_close_geo_payload(#[case] index_type: IndexType) {
+        let (mut builder, _, _) = create_builder(index_type);
         let geo_values = json!([
             {
                 "lon": BERLIN.lon,
@@ -1060,7 +1140,8 @@ mod tests {
                 "lat": POTSDAM.lat
             }
         ]);
-        index.add_point(1, &[&geo_values]).unwrap();
+        builder.add_point(1, &[&geo_values]).unwrap();
+        let index = builder.finalize().unwrap();
 
         let berlin_geo_radius = GeoRadius {
             center: BERLIN,
@@ -1086,14 +1167,12 @@ mod tests {
     }
 
     #[rstest]
-    #[case(true)]
-    #[case(false)]
-    fn load_from_disk(#[case] is_appendable: bool) {
-        let temp_dir = Builder::new().prefix("test_dir").tempdir().unwrap();
-        {
-            let db = open_db_with_existing_cf(&temp_dir.path().join("test_db")).unwrap();
-
-            let mut index = GeoMapIndex::builder(db, FIELD_NAME).make_empty().unwrap();
+    #[case(IndexType::Mutable)]
+    #[case(IndexType::Immutable)]
+    #[case(IndexType::Mmap)]
+    fn load_from_disk(#[case] index_type: IndexType) {
+        let temp_dir = {
+            let (mut builder, temp_dir, _) = create_builder(index_type);
 
             let geo_values = json!([
                 {
@@ -1105,13 +1184,17 @@ mod tests {
                     "lat": POTSDAM.lat
                 }
             ]);
-            index.add_point(1, &[&geo_values]).unwrap();
-            index.flusher()().unwrap();
-            drop(index);
-        }
+            builder.add_point(1, &[&geo_values]).unwrap();
+            builder.finalize().unwrap();
+            temp_dir
+        };
 
         let db = open_db_with_existing_cf(&temp_dir.path().join("test_db")).unwrap();
-        let mut new_index = GeoMapIndex::new(db, FIELD_NAME, is_appendable);
+        let mut new_index = match index_type {
+            IndexType::Mutable => GeoMapIndex::new(db, FIELD_NAME, true),
+            IndexType::Immutable => GeoMapIndex::new(db, FIELD_NAME, false),
+            IndexType::Mmap => GeoMapIndex::new_mmap(temp_dir.path()).unwrap(),
+        };
         new_index.load().unwrap();
 
         let berlin_geo_radius = GeoRadius {
@@ -1132,9 +1215,10 @@ mod tests {
     }
 
     #[rstest]
-    #[case(true)]
-    #[case(false)]
-    fn same_geo_index_between_points_test(#[case] is_appendable: bool) {
+    #[case(IndexType::Mutable)]
+    #[case(IndexType::Immutable)]
+    #[case(IndexType::Mmap)]
+    fn same_geo_index_between_points_test(#[case] index_type: IndexType) {
         let temp_dir = Builder::new().prefix("test_dir").tempdir().unwrap();
         {
             let db = open_db_with_existing_cf(&temp_dir.path().join("test_db")).unwrap();
@@ -1162,16 +1246,21 @@ mod tests {
         }
 
         let db = open_db_with_existing_cf(&temp_dir.path().join("test_db")).unwrap();
-        let mut new_index = GeoMapIndex::new(db, FIELD_NAME, is_appendable);
+        let mut new_index = match index_type {
+            IndexType::Mutable => GeoMapIndex::new(db, FIELD_NAME, true),
+            IndexType::Immutable => GeoMapIndex::new(db, FIELD_NAME, false),
+            IndexType::Mmap => unreachable!(),
+        };
         new_index.load().unwrap();
         assert_eq!(new_index.points_count(), 1);
         assert_eq!(new_index.points_values_count(), 2);
     }
 
     #[rstest]
-    #[case(true)]
-    #[case(false)]
-    fn test_empty_index_cardinality(#[case] is_appendable: bool) {
+    #[case(IndexType::Mutable)]
+    #[case(IndexType::Immutable)]
+    #[case(IndexType::Mmap)]
+    fn test_empty_index_cardinality(#[case] index_type: IndexType) {
         let polygon = GeoPolygon {
             exterior: GeoLineString {
                 points: vec![
@@ -1222,7 +1311,7 @@ mod tests {
         let hashes_with_interior =
             polygon_hashes(&polygon_with_interior, GEO_QUERY_MAX_REGION).unwrap();
 
-        let field_index = build_random_index(0, 0, is_appendable);
+        let (field_index, _, _) = build_random_index(0, 0, index_type);
         assert!(field_index
             .match_cardinality(&hashes)
             .equals_min_exp_max(&CardinalityEstimation::exact(0)),);
@@ -1230,7 +1319,7 @@ mod tests {
             .match_cardinality(&hashes_with_interior)
             .equals_min_exp_max(&CardinalityEstimation::exact(0)),);
 
-        let field_index = build_random_index(0, 100, is_appendable);
+        let (field_index, _, _) = build_random_index(0, 100, index_type);
         assert!(field_index
             .match_cardinality(&hashes)
             .equals_min_exp_max(&CardinalityEstimation::exact(0)),);
@@ -1238,7 +1327,7 @@ mod tests {
             .match_cardinality(&hashes_with_interior)
             .equals_min_exp_max(&CardinalityEstimation::exact(0)),);
 
-        let field_index = build_random_index(100, 100, is_appendable);
+        let (field_index, _, _) = build_random_index(100, 100, index_type);
         assert!(!field_index
             .match_cardinality(&hashes)
             .equals_min_exp_max(&CardinalityEstimation::exact(0)),);
@@ -1248,49 +1337,39 @@ mod tests {
     }
 
     #[rstest]
-    #[case(true)]
-    #[case(false)]
-    fn query_across_antimeridian(#[case] is_appendable: bool) {
-        let temp_dir = Builder::new().prefix("test_dir").tempdir().unwrap();
-        {
-            let db = open_db_with_existing_cf(&temp_dir.path().join("test_db")).unwrap();
+    #[case(IndexType::Mutable)]
+    #[case(IndexType::Immutable)]
+    #[case(IndexType::Mmap)]
+    fn query_across_antimeridian(#[case] index_type: IndexType) {
+        let (mut builder, _, _) = create_builder(index_type);
+        // Index BERLIN
+        let geo_values = json!([
+            {
+                "lon": BERLIN.lon,
+                "lat": BERLIN.lat
+            }
+        ]);
+        builder.add_point(1, &[&geo_values]).unwrap();
 
-            let mut index = GeoMapIndex::builder(db, FIELD_NAME).make_empty().unwrap();
+        // Index LOS_ANGELES
+        let geo_values = json!([
+            {
+                "lon": LOS_ANGELES.lon,
+                "lat": LOS_ANGELES.lat
+            }
+        ]);
+        builder.add_point(2, &[&geo_values]).unwrap();
 
-            // Index BERLIN
-            let geo_values = json!([
-                {
-                    "lon": BERLIN.lon,
-                    "lat": BERLIN.lat
-                }
-            ]);
-            index.add_point(1, &[&geo_values]).unwrap();
+        // Index TOKYO
+        let geo_values = json!([
+            {
+                "lon": TOKYO.lon,
+                "lat": TOKYO.lat
+            }
+        ]);
+        builder.add_point(3, &[&geo_values]).unwrap();
 
-            // Index LOS_ANGELES
-            let geo_values = json!([
-                {
-                    "lon": LOS_ANGELES.lon,
-                    "lat": LOS_ANGELES.lat
-                }
-            ]);
-            index.add_point(2, &[&geo_values]).unwrap();
-
-            // Index TOKYO
-            let geo_values = json!([
-                {
-                    "lon": TOKYO.lon,
-                    "lat": TOKYO.lat
-                }
-            ]);
-            index.add_point(3, &[&geo_values]).unwrap();
-
-            index.flusher()().unwrap();
-            drop(index);
-        }
-
-        let db = open_db_with_existing_cf(&temp_dir.path().join("test_db")).unwrap();
-        let mut new_index = GeoMapIndex::new(db, FIELD_NAME, is_appendable);
-        new_index.load().unwrap();
+        let new_index = builder.finalize().unwrap();
         assert_eq!(new_index.points_count(), 3);
         assert_eq!(new_index.points_values_count(), 3);
 

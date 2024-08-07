@@ -65,8 +65,8 @@ impl MmapGeoMapIndex {
         let deleted_path = path.join(DELETED_PATH);
         let config_path = path.join(CONFIG_PATH);
         let counts_per_hash_path = path.join(COUNTS_PER_HASH);
-        // let points_map_path = path.join(POINTS_MAP);
-        // let points_map_ids_path = path.join(POINTS_MAP_IDS);
+        let points_map_path = path.join(POINTS_MAP);
+        let points_map_ids_path = path.join(POINTS_MAP_IDS);
 
         atomic_save_json(
             &config_path,
@@ -84,6 +84,41 @@ impl MmapGeoMapIndex {
                 .enumerate()
                 .map(|(idx, values)| (idx as PointOffsetType, values.iter().cloned())),
         )?;
+
+        {
+            let points_map_file = create_and_ensure_length(
+                &points_map_path,
+                dynamic_index.points_map.len() * std::mem::size_of::<PointKeyValue>(),
+            )?;
+            let points_map_file = unsafe { MmapMut::map_mut(&points_map_file)? };
+            let mut points_map = unsafe { MmapSlice::<PointKeyValue>::try_from(points_map_file)? };
+
+            let points_map_ids_file = create_and_ensure_length(
+                &points_map_ids_path,
+                dynamic_index
+                    .points_map
+                    .iter()
+                    .map(|(_, v)| v.len())
+                    .sum::<usize>()
+                    * std::mem::size_of::<PointOffsetType>(),
+            )?;
+            let points_map_ids_file = unsafe { MmapMut::map_mut(&points_map_ids_file)? };
+            let mut points_map_ids =
+                unsafe { MmapSlice::<PointOffsetType>::try_from(points_map_ids_file)? };
+
+            let mut ids_offset = 0;
+            for (i, (hash, ids)) in dynamic_index.points_map.iter().enumerate() {
+                points_map[i].hash = into_mmap_hash(hash);
+                points_map[i].ids_start = ids_offset as u32;
+                points_map[i].ids_end = (ids_offset + ids.len()) as u32;
+                points_map_ids[ids_offset..ids_offset + ids.len()].copy_from_slice(
+                    &ids.iter()
+                        .map(|v| *v as PointOffsetType)
+                        .collect::<Vec<_>>(),
+                );
+                ids_offset += ids.len();
+            }
+        }
 
         {
             let counts_per_hash_file = create_and_ensure_length(
@@ -264,15 +299,8 @@ impl MmapGeoMapIndex {
                     self.points_map_ids
                         .get(point_key_value.ids_start as usize..point_key_value.ids_end as usize)?
                         .iter()
-                        .filter_map(|idx| {
-                            self.deleted.get(*idx as usize).and_then(|b| {
-                                if !b {
-                                    Some(*idx)
-                                } else {
-                                    None
-                                }
-                            })
-                        }),
+                        .cloned()
+                        .filter(|idx| self.deleted.get(*idx as usize).unwrap_or(false)),
                 ))
             })
     }
