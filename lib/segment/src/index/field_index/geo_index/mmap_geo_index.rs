@@ -97,8 +97,8 @@ impl MmapGeoMapIndex {
                 &points_map_ids_path,
                 dynamic_index
                     .points_map
-                    .iter()
-                    .map(|(_, v)| v.len())
+                    .values()
+                    .map(|v| v.len())
                     .sum::<usize>()
                     * std::mem::size_of::<PointOffsetType>(),
             )?;
@@ -300,7 +300,7 @@ impl MmapGeoMapIndex {
                         .get(point_key_value.ids_start as usize..point_key_value.ids_end as usize)?
                         .iter()
                         .cloned()
-                        .filter(|idx| self.deleted.get(*idx as usize).unwrap_or(false)),
+                        .filter(|idx| !self.deleted.get(*idx as usize).unwrap_or(true)),
                 ))
             })
     }
@@ -321,9 +321,7 @@ impl MmapGeoMapIndex {
 }
 
 fn mmap_geo_hash_cmp(a: &MmapGeoHash, b: &MmapGeoHash) -> std::cmp::Ordering {
-    let a = &a[1..=a[0] as usize];
-    let b = &b[1..=b[0] as usize];
-    a.cmp(b)
+    from_mmap_hash(a).cmp(&from_mmap_hash(b))
 }
 
 fn from_mmap_hash(hash: &MmapGeoHash) -> Option<GeoHashRef> {

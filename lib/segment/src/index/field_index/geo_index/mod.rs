@@ -63,7 +63,7 @@ impl GeoMapIndex {
     #[cfg(test)]
     pub fn builder_immutable(db: Arc<RwLock<DB>>, field: &str) -> GeoMapImmutableIndexBuilder {
         GeoMapImmutableIndexBuilder {
-            index: Self::new(db.clone(), field, false),
+            index: Self::new(db.clone(), field, true),
             field: field.to_owned(),
             db,
         }
@@ -377,7 +377,6 @@ impl FieldIndexBuilderTrait for GeoMapImmutableIndexBuilder {
     }
 
     fn finalize(self) -> OperationResult<Self::FieldIndexType> {
-        self.index.flusher()()?;
         drop(self.index);
         let mut immutable_index = GeoMapIndex::new(self.db, &self.field, false);
         immutable_index.load()?;
@@ -613,7 +612,7 @@ mod tests {
     use crate::types::test_utils::build_polygon;
     use crate::types::{GeoBoundingBox, GeoLineString, GeoPolygon, GeoRadius};
 
-    #[derive(Clone, Copy)]
+    #[derive(Clone, Copy, PartialEq, Debug)]
     enum IndexType {
         Mutable,
         Immutable,
@@ -1219,10 +1218,8 @@ mod tests {
     #[case(IndexType::Immutable)]
     #[case(IndexType::Mmap)]
     fn same_geo_index_between_points_test(#[case] index_type: IndexType) {
-        let temp_dir = Builder::new().prefix("test_dir").tempdir().unwrap();
-        {
-            let db = open_db_with_existing_cf(&temp_dir.path().join("test_db")).unwrap();
-            let mut index = GeoMapIndex::builder(db, FIELD_NAME).make_empty().unwrap();
+        let temp_dir = {
+            let (mut builder, temp_dir, _) = create_builder(index_type);
 
             let geo_values = json!([
                 {
@@ -1235,25 +1232,32 @@ mod tests {
                 }
             ]);
             let payload = [&geo_values];
-            index.add_point(1, &payload).unwrap();
-            index.add_point(2, &payload).unwrap();
+            builder.add_point(1, &payload).unwrap();
+            builder.add_point(2, &payload).unwrap();
+            let mut index = builder.finalize().unwrap();
+
             index.remove_point(1).unwrap();
             index.flusher()().unwrap();
 
             assert_eq!(index.points_count(), 1);
-            assert_eq!(index.points_values_count(), 2);
+            if index_type != IndexType::Mmap {
+                assert_eq!(index.points_values_count(), 2);
+            }
             drop(index);
-        }
+            temp_dir
+        };
 
         let db = open_db_with_existing_cf(&temp_dir.path().join("test_db")).unwrap();
         let mut new_index = match index_type {
             IndexType::Mutable => GeoMapIndex::new(db, FIELD_NAME, true),
             IndexType::Immutable => GeoMapIndex::new(db, FIELD_NAME, false),
-            IndexType::Mmap => unreachable!(),
+            IndexType::Mmap => GeoMapIndex::new_mmap(temp_dir.path()).unwrap(),
         };
         new_index.load().unwrap();
         assert_eq!(new_index.points_count(), 1);
-        assert_eq!(new_index.points_values_count(), 2);
+        if index_type != IndexType::Mmap {
+            assert_eq!(new_index.points_values_count(), 2);
+        }
     }
 
     #[rstest]
