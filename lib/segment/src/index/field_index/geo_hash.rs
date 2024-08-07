@@ -943,7 +943,7 @@ mod tests {
 
     #[test]
     fn turn_geo_hash_to_box() {
-        let geo_box = geo_hash_to_box(&"dr5ruj4477kd");
+        let geo_box = geo_hash_to_box("dr5ruj4477kd");
         let center = GeoPoint {
             lat: 40.76517460,
             lon: -74.00101399,
