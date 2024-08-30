@@ -67,7 +67,15 @@ async fn scroll_points(
         hash_ring_filter,
     } = request.into_inner();
 
-    let pass = match check_strict_mode(&request, &path.collection, &dispatcher, &access).await {
+    let pass = match check_strict_mode(
+        &request,
+        params.timeout_usize(),
+        &path.collection,
+        &dispatcher,
+        &access,
+    )
+    .await
+    {
         Ok(pass) => pass,
         Err(err) => return process_response_error(err, Instant::now()),
     };
@@ -117,7 +125,15 @@ async fn count_points(
         hash_ring_filter,
     } = request.into_inner();
 
-    let pass = match check_strict_mode(&request, &path.collection, &dispatcher, &access).await {
+    let pass = match check_strict_mode(
+        &request,
+        params.timeout_usize(),
+        &path.collection,
+        &dispatcher,
+        &access,
+    )
+    .await
+    {
         Ok(pass) => pass,
         Err(err) => return process_response_error(err, Instant::now()),
     };
