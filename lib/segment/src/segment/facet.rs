@@ -2,6 +2,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use common::iterator_ext::IteratorExt;
+use common::math::SAMPLE_SIZE_CL99_ME01;
 use itertools::{Either, Itertools};
 
 use super::Segment;
@@ -18,29 +19,45 @@ impl Segment {
         request: &FacetParams,
         is_stopped: &AtomicBool,
     ) -> OperationResult<HashMap<FacetValue, usize>> {
+        self.exact_or_estimate_facet(request, is_stopped, SAMPLE_SIZE_CL99_ME01)
+    }
+
+    /// For testing purposes only. To be able to adjust the threshold for easier testing
+    #[cfg(feature = "testing")]
+    pub fn exact_or_estimate_facet_for_test(
+        &self,
+        request: &FacetParams,
+        is_stopped: &AtomicBool,
+        cardinality_threshold: usize,
+    ) -> OperationResult<HashMap<FacetValue, usize>> {
+        self.exact_or_estimate_facet(request, is_stopped, cardinality_threshold)
+    }
+
+    /// Decides if the counts should be accurate or approximate based on the cardinality of the filter.
+    ///
+    /// If the cardinality of the filter exceeds the threshold, the counts will be
+    /// as approximate as a cardinality estimation for each hit.
+    fn exact_or_estimate_facet(
+        &self,
+        request: &FacetParams,
+        is_stopped: &AtomicBool,
+        cardinality_threshold: usize,
+    ) -> OperationResult<HashMap<FacetValue, usize>> {
         const STOP_CHECK_INTERVAL: usize = 100;
 
         let payload_index = self.payload_index.borrow();
 
         let facet_index = payload_index.get_facet_index(&request.key)?;
-        let context;
 
         let hits_iter = if let Some(filter) = &request.filter {
             let id_tracker = self.id_tracker.borrow();
             let filter_cardinality = payload_index.estimate_cardinality(filter);
 
-            let available = self.available_point_count();
-            let percentage_filtered = filter_cardinality.exp as f64 / available as f64;
+            // If the cardinality is low enough, it is fast enough to just go over all the points,
+            // and we are also interested in higher accuracy at low counts
+            let do_accurate_counts = filter_cardinality.exp < cardinality_threshold;
 
-            // TODO(facets): define a better estimate for this decision, the question is:
-            // What is more expensive, to hash the same value excessively or to check with filter too many times?
-            //
-            // For now this is defined from some rudimentary benchmarking two scenarios:
-            // - a collection with few keys
-            // - a collection with almost a unique key per point
-            let use_iterative_approach = percentage_filtered < 0.3;
-
-            let iter = if use_iterative_approach {
+            let iter = if do_accurate_counts {
                 // go over the filtered points and aggregate the values
                 // aka. read from other indexes
                 let iter = payload_index
@@ -58,15 +75,18 @@ impl Segment {
 
                 Either::Left(iter)
             } else {
-                // go over the values and filter the points
-                // aka. read from facet index
-                //
-                // This is more similar to a full-scan, but we won't be hashing so many times.
-                context = payload_index.struct_filtered_context(filter);
+                // Use cardinality estimations for each value to estimate the counts
+                let cardinality_ratio =
+                    filter_cardinality.exp as f32 / self.available_point_count() as f32;
 
+                // Go over each value in the map index
                 let iter = facet_index
-                    .iter_filtered_counts_per_value(&context)
+                    .iter_counts_per_value()
                     .check_stop(|| is_stopped.load(Ordering::Relaxed))
+                    .map(move |hit| FacetHit {
+                        value: hit.value,
+                        count: (hit.count as f32 * cardinality_ratio).round() as usize,
+                    })
                     .filter(|hit| hit.count > 0);
 
                 Either::Right(iter)
