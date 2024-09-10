@@ -37,16 +37,17 @@ tokio-tracing = ["tokio/tracing"]
 stacktrace = ["rstack-self"]
 chaos-testing = []
 data-consistency-check = ["collection/data-consistency-check"]
+testing = ["collection/testing", "common/testing", "segment/testing"]
 
 [dev-dependencies]
 serde_urlencoded = "0.7"
 sealed_test = "1.1.0"
 
-tempfile = { workspace = true }
 rusty-hook = "^0.11.2"
 
 
 [dependencies]
+tempfile = { workspace = true }
 parking_lot = { workspace = true, optional = true }
 
 thiserror = { workspace = true }
@@ -212,6 +213,12 @@ path = "src/wal_inspector.rs"
 test = false
 bench = false
 
+[[bin]]
+name = "memory_experiment"
+path = "src/memory_experiment.rs"
+test = false
+bench = true
+
 [workspace]
 members = [
     "lib/api",
@@ -245,3 +252,4 @@ inherits = "release"
 lto = false
 opt-level = 3
 codegen-units = 256 # restore default value for faster compilation
+debug = true
