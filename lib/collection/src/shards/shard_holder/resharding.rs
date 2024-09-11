@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::ops::Deref as _;
+use std::sync::Arc;
 
-use segment::types::ShardKey;
+use segment::types::{Condition, Filter, ShardKey};
 
 use super::ShardHolder;
 use crate::hash_ring::{self, HashRingRouter};
@@ -283,6 +284,38 @@ impl ShardHolder {
                 false
             }
         };
+
+        // Cleanup existing shards if resharding down
+        if is_in_progress && direction == ReshardingDirection::Down {
+            for (&id, shard) in self.shards.iter() {
+                // Skip shards that does not belong to resharding shard key
+                if self.shard_id_to_key_mapping.get(&id) != shard_key.as_ref() {
+                    continue;
+                }
+
+                // Skip target shard
+                if id == shard_id {
+                    continue;
+                }
+
+                // Revert replicas in `Resharding` state back into `Active` state
+                for (peer, state) in shard.peers() {
+                    if state == ReplicaState::Resharding {
+                        shard.set_replica_state(&peer, ReplicaState::Active)?;
+                    }
+                }
+
+                // We only cleanup local shards
+                if !shard.is_local().await {
+                    continue;
+                }
+
+                // Remove any points that might have been transferred from target shard
+                let filter = self.hash_ring_filter(id).expect("hash ring filter");
+                let filter = Filter::new_must(Condition::CustomIdChecker(Arc::new(filter)));
+                shard.cleanup_local_shard(filter).await?;
+            }
+        }
 
         if let Some(ring) = self.rings.get_mut(shard_key) {
             log::debug!("reverting resharding hashring for shard {shard_id}");
