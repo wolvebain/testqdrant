@@ -6,6 +6,7 @@ use collection::operations::shard_selector_internal::ShardSelectorInternal;
 use collection::operations::types::{
     CountRequestInternal, PointRequestInternal, ScrollRequestInternal, UpdateResult, UpdateStatus,
 };
+use collection::operations::verification::{new_unchecked_verification_pass, VerificationPass};
 use collection::shards::shard::ShardId;
 use segment::types::{Condition, ExtendedPointId, Filter};
 use storage::content_manager::collection_verification::check_strict_mode;
@@ -36,9 +37,12 @@ async fn get_points(
     request: web::Json<PointRequestInternal>,
     params: web::Query<ReadParams>,
 ) -> impl Responder {
+    // No strict mode verification needed
+    let pass = new_unchecked_verification_pass();
+
     helpers::time(async move {
         let records = points::do_get_points(
-            dispatcher.toc(&access),
+            dispatcher.toc_new(&access, &pass),
             &path.collection,
             request.into_inner(),
             params.consistency,
@@ -67,7 +71,15 @@ async fn scroll_points(
         hash_ring_filter,
     } = request.into_inner();
 
-    let pass = match check_strict_mode(&request, &path.collection, &dispatcher, &access).await {
+    let pass = match check_strict_mode(
+        &request,
+        params.timeout_usize(),
+        &path.collection,
+        &dispatcher,
+        &access,
+    )
+    .await
+    {
         Ok(pass) => pass,
         Err(err) => return process_response_error(err, Instant::now()),
     };
@@ -80,6 +92,7 @@ async fn scroll_points(
                 &path.collection,
                 AccessRequirements::new(),
                 filter.expected_shard_id,
+                &pass,
             )
             .await?
             .into(),
@@ -117,7 +130,15 @@ async fn count_points(
         hash_ring_filter,
     } = request.into_inner();
 
-    let pass = match check_strict_mode(&request, &path.collection, &dispatcher, &access).await {
+    let pass = match check_strict_mode(
+        &request,
+        params.timeout_usize(),
+        &path.collection,
+        &dispatcher,
+        &access,
+    )
+    .await
+    {
         Ok(pass) => pass,
         Err(err) => return process_response_error(err, Instant::now()),
     };
@@ -130,6 +151,7 @@ async fn count_points(
                 &path.collection,
                 AccessRequirements::new(),
                 filter.expected_shard_id,
+                &pass,
             )
             .await?
             .into(),
@@ -161,6 +183,9 @@ async fn delete_points(
     selector: web::Json<Selector>,
     params: web::Query<UpdateParam>,
 ) -> impl Responder {
+    // Nothing to verify here.
+    let pass = new_unchecked_verification_pass();
+
     helpers::time(async move {
         let path = path.into_inner();
         let selector = selector.into_inner();
@@ -171,6 +196,7 @@ async fn delete_points(
             &path.collection,
             AccessRequirements::new().write().whole(),
             selector.hash_ring_filter.expected_shard_id,
+            &pass,
         )
         .await?;
 
@@ -186,7 +212,7 @@ async fn delete_points(
             };
 
             let resp = dispatcher
-                .toc(&access)
+                .toc_new(&access, &pass)
                 .scroll(
                     &path.collection,
                     scroll,
@@ -215,7 +241,7 @@ async fn delete_points(
         });
 
         points::do_delete_points(
-            dispatcher.toc(&access).clone(),
+            dispatcher.toc_new(&access, &pass).clone(),
             path.collection,
             delete,
             None,
@@ -260,11 +286,12 @@ async fn get_hash_ring_filter(
     collection: &str,
     reqs: AccessRequirements,
     expected_shard_id: ShardId,
+    verification_pass: &VerificationPass,
 ) -> StorageResult<Filter> {
     let pass = access.check_collection_access(collection, reqs)?;
 
     let shard_holder = dispatcher
-        .toc(access)
+        .toc_new(access, verification_pass)
         .get_collection(&pass)
         .await?
         .shards_holder();
